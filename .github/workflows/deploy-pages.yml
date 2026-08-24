@@ -33,12 +33,12 @@ jobs:
       - name: Crea il sito statico
         run: npm run build:pages
         env:
-          VITE_FIREBASE_API_KEY: AIzaSyBNISF18MxZROJMFajo97AFxUs9qhHknpc
-          VITE_FIREBASE_AUTH_DOMAIN: lume-flashcards-mcv.firebaseapp.com
-          VITE_FIREBASE_PROJECT_ID: lume-flashcards-mcv
-          VITE_FIREBASE_STORAGE_BUCKET: lume-flashcards-mcv.firebasestorage.app
-          VITE_FIREBASE_MESSAGING_SENDER_ID: "936817260734"
-          VITE_FIREBASE_APP_ID: 1:936817260734:web:6765e47a441bfa8d8186ef
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
       - name: Prepara GitHub Pages
         uses: actions/configure-pages@v5
       - name: Carica il sito

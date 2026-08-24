@@ -1,0 +1,50 @@
+name: Pubblica Lume su GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scarica il progetto
+        uses: actions/checkout@v4
+      - name: Prepara Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Installa
+        run: npm ci
+      - name: Crea il sito statico
+        run: npm run build:pages
+        env:
+          VITE_FIREBASE_API_KEY: AIzaSyBNISF18MxZROJMFajo97AFxUs9qhHknpc
+          VITE_FIREBASE_AUTH_DOMAIN: lume-flashcards-mcv.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: lume-flashcards-mcv
+          VITE_FIREBASE_STORAGE_BUCKET: lume-flashcards-mcv.firebasestorage.app
+          VITE_FIREBASE_MESSAGING_SENDER_ID: "936817260734"
+          VITE_FIREBASE_APP_ID: 1:936817260734:web:6765e47a441bfa8d8186ef
+      - name: Prepara GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Carica il sito
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: gh-pages
+      - name: Pubblica
+        id: deployment
+        uses: actions/deploy-pages@v4

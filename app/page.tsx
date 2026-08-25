@@ -65,6 +65,7 @@ type Folder = {
   title: string;
   color: string;
   emoji: string;
+  visibility: "private" | "public";
   createdAt: number;
 };
 
@@ -74,6 +75,7 @@ type Settings = {
   volume: number;
   focusMinutes: number;
   breathingIntervalMinutes: number;
+  bestStreak: number;
   typographyRevision: number;
 };
 
@@ -86,7 +88,7 @@ type View =
   | { name: "study" };
 
 type StudyTarget = {
-  kind: "deck" | "folder" | "public";
+  kind: "deck" | "folder" | "public" | "all";
   id: string;
 };
 
@@ -118,6 +120,9 @@ type PublicDeck = Deck & {
   catalogId: string;
   ownerId: string;
   author: string;
+  sourceFolderId?: string;
+  sourceFolderTitle?: string;
+  sourceFolderPublic?: boolean;
 };
 
 type SoundMode = "off" | "rain" | "brown" | "bach";
@@ -251,6 +256,7 @@ const demoFolders: Folder[] = [
     title: "Cartella prova",
     color: "#e8c47d",
     emoji: "",
+    visibility: "private",
     createdAt: 1,
   },
 ];
@@ -461,6 +467,7 @@ const defaultSettings: Settings = {
   volume: 0.28,
   focusMinutes: 25,
   breathingIntervalMinutes: 0,
+  bestStreak: 0,
   typographyRevision: 2,
 };
 
@@ -572,6 +579,7 @@ function normalizeFolders(value: unknown): Folder[] {
             : `Cartella ${index + 1}`,
         color: typeof candidate.color === "string" ? candidate.color : "#e8c47d",
         emoji: "",
+        visibility: candidate.visibility === "public" ? "public" : "private",
         createdAt: typeof candidate.createdAt === "number" ? candidate.createdAt : Date.now() + index,
       };
     });
@@ -642,6 +650,11 @@ function normalizePublicDeck(value: unknown, fallbackId: string): PublicDeck | n
     catalogId: typeof candidate.catalogId === "string" ? candidate.catalogId : fallbackId,
     ownerId: typeof candidate.ownerId === "string" ? candidate.ownerId : "community",
     author: typeof candidate.author === "string" && candidate.author.trim() ? candidate.author : "Studente Lume",
+    sourceFolderId:
+      typeof candidate.sourceFolderId === "string" ? candidate.sourceFolderId : undefined,
+    sourceFolderTitle:
+      typeof candidate.sourceFolderTitle === "string" ? candidate.sourceFolderTitle : undefined,
+    sourceFolderPublic: candidate.sourceFolderPublic === true,
   };
 }
 
@@ -912,17 +925,28 @@ export default function Home() {
         ? folders.find((folder) => folder.id === selectedDeck.folderId)
         : undefined;
   const authUserId = user?.uid;
+  const publicFolderIds = useMemo(
+    () => new Set(folders.filter((folder) => folder.visibility === "public").map((folder) => folder.id)),
+    [folders],
+  );
   const localPublicDecks = useMemo<PublicDeck[]>(
     () =>
       decks
-        .filter((deck) => deck.visibility === "public")
-        .map((deck) => ({
-          ...deck,
-          catalogId: authUserId ? `${authUserId}_${deck.id}` : `local:${deck.id}`,
-          ownerId: authUserId ?? "local-user",
-          author: user?.email?.split("@")[0] ?? "Il tuo set pubblico",
-        })),
-    [authUserId, decks, user?.email],
+        .filter((deck) => deck.visibility === "public" || publicFolderIds.has(deck.folderId))
+        .map((deck) => {
+          const sourceFolder = folders.find((folder) => folder.id === deck.folderId);
+          return {
+            ...deck,
+            visibility: "public",
+            catalogId: authUserId ? `${authUserId}_${deck.id}` : `local:${deck.id}`,
+            ownerId: authUserId ?? "local-user",
+            author: user?.email?.split("@")[0] ?? "Il tuo set pubblico",
+            sourceFolderId: sourceFolder?.id,
+            sourceFolderTitle: sourceFolder?.title,
+            sourceFolderPublic: sourceFolder?.visibility === "public",
+          };
+        }),
+    [authUserId, decks, folders, publicFolderIds, user?.email],
   );
   const publicCatalog = useMemo(() => {
     const catalog = [...localPublicDecks, ...remotePublicDecks, ...demoCommunityDecks];
@@ -940,6 +964,7 @@ export default function Home() {
       const deck = decks.find((item) => item.id === study.target.id);
       return deck ? [deck] : [];
     }
+    if (study.target.kind === "all") return decks;
     if (study.target.kind === "folder") {
       return decks.filter((deck) => deck.folderId === study.target.id);
     }
@@ -948,14 +973,20 @@ export default function Home() {
   }, [decks, publicCatalog, study]);
   const studyDisplayDeck = useMemo<Deck | undefined>(() => {
     if (!study || !studySourceDecks.length) return undefined;
-    if (study.target.kind !== "folder") return studySourceDecks[0];
-    const folder = folders.find((item) => item.id === study.target.id);
+    if (study.target.kind !== "folder" && study.target.kind !== "all") return studySourceDecks[0];
+    const folder = study.target.kind === "folder"
+      ? folders.find((item) => item.id === study.target.id)
+      : undefined;
     const first = studySourceDecks[0];
     return {
       ...first,
-      id: `folder-study:${folder?.id ?? study.target.id}`,
-      title: folder?.title ?? "Cartella",
-      description: "Studio completo della cartella",
+      id: study.target.kind === "all"
+        ? "all-difficult-study"
+        : `folder-study:${folder?.id ?? study.target.id}`,
+      title: study.target.kind === "all" ? "Carte da rivedere" : folder?.title ?? "Cartella",
+      description: study.target.kind === "all"
+        ? "Ripasso delle carte più ostinate"
+        : "Studio completo della cartella",
       color: folder?.color ?? first.color,
       cards: studySourceDecks.flatMap((deck) => deck.cards),
       keywordHelp: studySourceDecks.some((deck) => deck.keywordHelp),
@@ -1063,7 +1094,11 @@ export default function Home() {
       void Promise.all(
         decks.map((deck) => {
           const reference = doc(firestore, "publicSets", `${authUserId}_${deck.id}`);
-          if (deck.visibility !== "public") return Promise.resolve();
+          const sourceFolder = folders.find((folder) => folder.id === deck.folderId);
+          const folderIsPublic = sourceFolder?.visibility === "public";
+          if (deck.visibility !== "public" && !folderIsPublic) {
+            return deleteDoc(reference).catch(() => undefined);
+          }
           return setDoc(reference, {
             id: deck.id,
             folderId: "community",
@@ -1086,13 +1121,16 @@ export default function Home() {
             catalogId: `${authUserId}_${deck.id}`,
             ownerId: authUserId,
             author: user?.email?.split("@")[0] ?? "Studente Lume",
+            sourceFolderId: sourceFolder?.id ?? "",
+            sourceFolderTitle: sourceFolder?.title ?? "",
+            sourceFolderPublic: folderIsPublic,
             publishedAt: Date.now(),
           });
         }),
       ).catch(() => undefined);
     }, 900);
     return () => window.clearTimeout(timer);
-  }, [authUserId, cloudReady, decks, user?.email]);
+  }, [authUserId, cloudReady, decks, folders, user?.email]);
 
   const totalCards = decks.reduce((sum, deck) => sum + deck.cards.length, 0);
   const dueCards = decks.reduce(
@@ -1266,6 +1304,7 @@ export default function Home() {
   };
 
   const resolveStudyDecks = (target: StudyTarget) => {
+    if (target.kind === "all") return decks;
     if (target.kind === "deck") {
       const deck = decks.find((item) => item.id === target.id);
       return deck ? [deck] : [];
@@ -1345,6 +1384,13 @@ export default function Home() {
     (result: "known" | "missed") => {
       if (!study || !study.flipped || study.complete) return;
       const cardId = study.queue[study.index];
+      if (result === "known") {
+        const nextStreak = study.streak + 1;
+        setSettings((current) => ({
+          ...current,
+          bestStreak: Math.max(current.bestStreak ?? 0, nextStreak),
+        }));
+      }
       if (study.target.kind !== "public") {
         setDecks((current) =>
           current.map((deck) => {
@@ -1446,7 +1492,16 @@ export default function Home() {
       ) {
         setFolders(normalizeFolders(parsed.folders));
         setDecks(normalizeDecks(parsed.decks));
-        if (parsed.settings) setSettings(parsed.settings);
+        if (parsed.settings) {
+          setSettings({
+            ...defaultSettings,
+            ...parsed.settings,
+            bestStreak:
+              typeof parsed.settings.bestStreak === "number"
+                ? parsed.settings.bestStreak
+                : 0,
+          });
+        }
         navigate({ name: "home" });
       }
     } catch {
@@ -1491,6 +1546,15 @@ export default function Home() {
           onToggleLume={() => {
             setLumePanelOpen((open) => !open);
             setSoundPanelOpen(false);
+          }}
+          onStartBreathing={() => {
+            setLumePanelOpen(false);
+            setSoundPanelOpen(false);
+            setLumeSession({
+              kind: "breathing",
+              startedAt: Date.now(),
+              automatic: false,
+            });
           }}
           onOpenAccount={() => {
             setAuthMessage("");
@@ -1544,6 +1608,8 @@ export default function Home() {
               totalCards={totalCards}
               dueCards={dueCards}
               mastery={overallMastery}
+              focusMinutes={settings.focusMinutes}
+              bestStreak={settings.bestStreak}
               onOpenFolder={(folderId) => navigate({ name: "folder", folderId })}
               onStudy={(deck) => openStudySetup({ kind: "deck", id: deck.id })}
               onContinueCard={(deckId, cardId) =>
@@ -1557,6 +1623,17 @@ export default function Home() {
               }
               onCreate={() => openCreateDeck(folders[0]?.id)}
               onCreateFolder={openCreateFolder}
+              onOpenFocus={() => {
+                setSoundPanelOpen(false);
+                setLumePanelOpen(true);
+              }}
+              onReviewDue={() => {
+                const difficult = decks
+                  .flatMap((deck) => deck.cards)
+                  .filter((card) => card.missed > card.known)
+                  .map((card) => card.id);
+                openStudySetup({ kind: "all", id: "due" }, difficult);
+              }}
               onViewAll={() => navigate({ name: "library" })}
             />
           )}
@@ -1654,7 +1731,8 @@ export default function Home() {
               onExit={() => {
                 if (study.target.kind === "deck") navigate({ name: "deck", deckId: study.target.id });
                 else if (study.target.kind === "folder") navigate({ name: "folder", folderId: study.target.id });
-                else navigate({ name: "community" });
+                else if (study.target.kind === "public") navigate({ name: "community" });
+                else navigate({ name: "home" });
               }}
               onReviewWrong={() => openStudySetup(study.target, study.wrong)}
               onRestart={() => openStudySetup(study.target)}
@@ -1665,7 +1743,9 @@ export default function Home() {
         <MobileNav
           view={view}
           onNavigate={navigate}
-          onCreate={() => openCreateDeck(selectedFolder?.id ?? folders[0]?.id)}
+          hasFolders={folders.length > 0}
+          onCreateFolder={openCreateFolder}
+          onCreateSet={() => openCreateDeck(selectedFolder?.id ?? folders[0]?.id)}
         />
       </div>
 
@@ -1709,7 +1789,9 @@ export default function Home() {
         <StudySettingsModal
           request={studyRequest}
           title={
-            studyRequest.target.kind === "folder"
+            studyRequest.target.kind === "all"
+              ? "Carte da rivedere"
+              : studyRequest.target.kind === "folder"
               ? folders.find((folder) => folder.id === studyRequest.target.id)?.title ?? "Cartella"
               : studyRequest.target.kind === "public"
                 ? publicCatalog.find((deck) => deck.catalogId === studyRequest.target.id)?.title ?? "Set pubblico"
@@ -2098,6 +2180,7 @@ function Sidebar({
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
     () => new Set([activeFolderId ?? folders[0]?.id].filter(Boolean) as string[]),
   );
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
 
   const toggleFolder = (folderId: string) => {
     setExpandedFolders((current) => {
@@ -2132,7 +2215,38 @@ function Sidebar({
       <div className="sidebar-folder-section">
         <div className="sidebar-section-heading">
           <span>Le mie cartelle</span>
-          <button type="button" onClick={onCreateFolder} aria-label="Nuova cartella">＋</button>
+          <button
+            type="button"
+            onClick={() => setCreateMenuOpen((open) => !open)}
+            aria-label="Crea cartella o set"
+            aria-expanded={createMenuOpen}
+          >＋</button>
+          {createMenuOpen && (
+            <div className="sidebar-create-menu">
+              <button
+                type="button"
+                onClick={() => {
+                  setCreateMenuOpen(false);
+                  onCreateFolder();
+                }}
+              >
+                <i aria-hidden="true" />
+                <span><strong>Nuova cartella</strong><small>Raccogli più set</small></span>
+              </button>
+              <button
+                type="button"
+                disabled={!folders.length}
+                onClick={() => {
+                  if (!folders[0]) return;
+                  setCreateMenuOpen(false);
+                  onCreateSet(activeFolderId ?? folders[0].id);
+                }}
+              >
+                <b aria-hidden="true">Aa</b>
+                <span><strong>Nuovo set</strong><small>Dentro una cartella</small></span>
+              </button>
+            </div>
+          )}
         </div>
         <div className="sidebar-folder-tree">
           {folders.map((folder) => {
@@ -2185,10 +2299,6 @@ function Sidebar({
       </div>
 
       <div className="sidebar-spacer" />
-
-      <button className="primary-button create-button" type="button" onClick={onCreateFolder}>
-        <span aria-hidden="true">＋</span> Nuova cartella
-      </button>
       <p className="local-note">Gratuito · I dati restano sul tuo dispositivo</p>
     </aside>
   );
@@ -2205,6 +2315,7 @@ function Topbar({
   onFontChange,
   onToggleSound,
   onToggleLume,
+  onStartBreathing,
   onOpenAccount,
 }: {
   theme: Settings["theme"];
@@ -2217,6 +2328,7 @@ function Topbar({
   onFontChange: (font: FontChoice) => void;
   onToggleSound: () => void;
   onToggleLume: () => void;
+  onStartBreathing: () => void;
   onOpenAccount: () => void;
 }) {
   return (
@@ -2224,16 +2336,25 @@ function Topbar({
       <div className="mobile-brand">
         <Brand />
       </div>
-      <p><strong>Workspace</strong><span>/</span> Il mio spazio</p>
       <div className="top-actions">
         <button
           className={`icon-button lume-mode-button ${lumePanelOpen ? "active" : ""}`}
           type="button"
           onClick={onToggleLume}
-          aria-label="Standby e respiro Lume"
+          aria-label="Timer studio con candela"
           aria-expanded={lumePanelOpen}
         >
           <span className="mini-candle-icon" aria-hidden="true"><i /></span>
+        </button>
+        <button
+          className="icon-button breathing-mode-button"
+          type="button"
+          onClick={onStartBreathing}
+          aria-label="Pausetta: cinque respiri guidati"
+          title="Pausetta"
+        >
+          <span className="breathing-icon" aria-hidden="true"><i /></span>
+          <span className="breathing-button-label">Pausetta</span>
         </button>
         <button
           className={`icon-button sound-button ${soundMode !== "off" ? "is-playing" : ""} ${soundPanelOpen ? "active" : ""}`}
@@ -2267,9 +2388,9 @@ function Topbar({
           onClick={onToggleTheme}
           aria-label={theme === "light" ? "Attiva modalità scura" : "Attiva modalità chiara"}
         >
-          <span aria-hidden="true">☼</span>
+          <span className="theme-symbol light" aria-hidden="true"><b /></span>
           <i className={theme === "dark" ? "dark" : ""} />
-          <span aria-hidden="true">☾</span>
+          <span className="theme-symbol dark" aria-hidden="true" />
         </button>
         <button
           className="account-button"
@@ -2291,11 +2412,15 @@ function Dashboard({
   totalCards,
   dueCards,
   mastery: masteryValue,
+  focusMinutes,
+  bestStreak,
   onOpenFolder,
   onStudy,
   onContinueCard,
   onCreate,
   onCreateFolder,
+  onOpenFocus,
+  onReviewDue,
   onViewAll,
 }: {
   folders: Folder[];
@@ -2303,11 +2428,15 @@ function Dashboard({
   totalCards: number;
   dueCards: number;
   mastery: number;
+  focusMinutes: number;
+  bestStreak: number;
   onOpenFolder: (id: string) => void;
   onStudy: (deck: Deck) => void;
   onContinueCard: (deckId: string, cardId: string) => void;
   onCreate: () => void;
   onCreateFolder: () => void;
+  onOpenFocus: () => void;
+  onReviewDue: () => void;
   onViewAll: () => void;
 }) {
   const recent = [...decks]
@@ -2370,25 +2499,30 @@ function Dashboard({
           </div>
         </div>
         <div className="stat-row">
-          <div className="stat-card">
-            <span>Cartelle</span>
-            <strong>{folders.length}</strong>
-            <small>con i tuoi set ordinati</small>
-          </div>
+          <button className="stat-card focus-timer-stat" type="button" onClick={onOpenFocus}>
+            <span>Timer Lume</span>
+            <strong>{focusMinutes} min</strong>
+            <small>Studia con la candela accesa <b aria-hidden="true">→</b></small>
+          </button>
           <div className="stat-card">
             <span>Flashcards</span>
             <strong>{totalCards}</strong>
             <small>pronte da ripassare</small>
           </div>
-          <div className="stat-card accent-stat">
+          <button
+            className="stat-card accent-stat review-stat"
+            type="button"
+            onClick={onReviewDue}
+            disabled={!dueCards}
+          >
             <span>Da rivedere</span>
             <strong>{dueCards}</strong>
-            <small>le carte più ostinate</small>
-          </div>
+            <small>{dueCards ? "Ripassa le carte più ostinate →" : "Nessuna carta in attesa"}</small>
+          </button>
           <div className="stat-card">
             <span>Padronanza</span>
             <strong>{masteryValue}%</strong>
-            <small>su tutte le risposte</small>
+            <small>su tutte le risposte · record streak <b>{bestStreak}</b></small>
           </div>
         </div>
       </section>
@@ -2544,7 +2678,7 @@ function FolderTile({
       </span>
       <span className="folder-back" aria-hidden="true" />
       <span className="folder-front">
-        <small>Cartella</small>
+        <small>Cartella · {folder.visibility === "public" ? "Pubblica" : "Privata"}</small>
         <strong>{folder.title}</strong>
         <span>{decks.length} set · {cards} flashcard</span>
       </span>
@@ -2639,7 +2773,7 @@ function FolderLibrary({
         <button className="new-folder-tile" type="button" onClick={onCreate}>
           <span aria-hidden="true">＋</span>
           <strong>Crea una nuova cartella</strong>
-          <small>Scegli un nome, un colore e un’emoji</small>
+          <small>Scegli un nome e un colore</small>
         </button>
       </div>
       {!filtered.length && (
@@ -2708,7 +2842,12 @@ function CommunityPage({
           <article className="community-deck" key={deck.catalogId}>
             <SetCover deck={deck} onOpen={() => onStudy(deck.catalogId)} />
             <div className="community-deck-meta">
-              <span>{deck.ownerId === userId || deck.ownerId === "local-user" ? "Il tuo set" : `di ${deck.author}`}</span>
+              <span>
+                {deck.sourceFolderPublic && deck.sourceFolderTitle
+                  ? `${deck.sourceFolderTitle} · `
+                  : ""}
+                {deck.ownerId === userId || deck.ownerId === "local-user" ? "Il tuo set" : `di ${deck.author}`}
+              </span>
               <button type="button" onClick={() => onStudy(deck.catalogId)}>
                 Studia <span aria-hidden="true">→</span>
               </button>
@@ -2753,7 +2892,7 @@ function FolderPage({
       <div className="folder-page-heading">
         <div>
           <span className="folder-page-emoji" style={{ background: folder.color }} aria-hidden="true" />
-          <span className="eyebrow">Fascicolo</span>
+          <span className="eyebrow">Fascicolo · {folder.visibility === "public" ? "Pubblico" : "Privato"}</span>
           <h1>{folder.title}</h1>
           <p>{decks.length} set · {cards} flashcard</p>
         </div>
@@ -3555,7 +3694,7 @@ function AccountModal({
           <div className="preferences-heading">
             <span className="eyebrow">Pause Lume</span>
             <h3>Un respiro ogni tanto.</h3>
-            <p>Cinque respiri guidati: 7 secondi per inspirare e 7 per espirare.</p>
+            <p>Cinque respiri guidati: 5 secondi per inspirare e 5 per espirare.</p>
           </div>
           <div className="preference-control-row">
             <label className="field">
@@ -3646,6 +3785,9 @@ function FolderModal({
 }) {
   const [title, setTitle] = useState(folder?.title ?? "");
   const [color, setColor] = useState(folder?.color ?? "#e8c47d");
+  const [visibility, setVisibility] = useState<Folder["visibility"]>(
+    folder?.visibility ?? "private",
+  );
   useEscape(onClose);
 
   return (
@@ -3659,7 +3801,12 @@ function FolderModal({
         onSubmit={(event) => {
           event.preventDefault();
           if (!title.trim()) return;
-          onSave({ title: title.trim(), color, emoji: folder?.emoji ?? "" });
+          onSave({
+            title: title.trim(),
+            color,
+            emoji: folder?.emoji ?? "",
+            visibility,
+          });
         }}
       >
         <div className="modal-header">
@@ -3691,6 +3838,23 @@ function FolderModal({
             <i aria-hidden="true" /><strong>{title || "La tua cartella"}</strong>
           </div>
         </div>
+        <label className={visibility === "public" ? "feature-option folder-public-option selected" : "feature-option folder-public-option"}>
+          <input
+            type="checkbox"
+            checked={visibility === "public"}
+            onChange={(event) => setVisibility(event.target.checked ? "public" : "private")}
+          />
+          <span className="public-folder-mark" aria-hidden="true" />
+          <div>
+            <strong>Cartella pubblica</strong>
+            <small>Tutti i set contenuti possono comparire in Esplora. Puoi renderla privata quando vuoi.</small>
+          </div>
+        </label>
+        {visibility === "public" && (
+          <p className="public-setting-note">
+            I set della cartella sono visibili nel catalogo. Per condividerli online con altre persone, accedi al profilo.
+          </p>
+        )}
         <div className="modal-actions">
           <button className="text-button" type="button" onClick={onClose}>Annulla</button>
           <button className="primary-button" type="submit">{folder ? "Salva modifiche" : "Crea cartella"}</button>
@@ -4025,14 +4189,14 @@ function LumePanel({
   return (
     <aside className="floating-panel lume-panel" aria-label="Standby Lume">
       <div className="panel-header">
-        <div><span className="eyebrow">Lume</span><h3>Metti lo studio in pausa.</h3></div>
+        <div><span className="eyebrow">Lume</span><h3>Studia senza distrazioni.</h3></div>
         <button type="button" onClick={onClose} aria-label="Chiudi">×</button>
       </div>
       <p className="lume-panel-intro">
-        Lo schermo si oscura e la candela misura il tempo senza distrazioni.
+        Accendi la candela, lascia in disparte il resto e dedica questo tempo allo studio.
       </p>
       <label className="field lume-duration-field">
-        <span>Durata dello standby</span>
+        <span>Durata dello studio</span>
         <div>
           <input
             type="number"
@@ -4057,7 +4221,7 @@ function LumePanel({
         ))}
       </div>
       <button className="primary-button lume-start-button" type="button" onClick={onStartFocus}>
-        Avvia standby
+        Accendi il timer
       </button>
       <button className="lume-breathe-now" type="button" onClick={onStartBreathing}>
         Oppure fai cinque respiri guidati <span aria-hidden="true">→</span>
@@ -4081,17 +4245,18 @@ function LumeStandby({
 }) {
   const [now, setNow] = useState(() => Date.now());
   const [finished, setFinished] = useState(false);
+  const [showTimer, setShowTimer] = useState(true);
   useEscape(onClose);
 
-  const totalMs = session.kind === "focus" ? session.durationMs : 5 * 14_000;
+  const totalMs = session.kind === "focus" ? session.durationMs : 5 * 10_000;
   const elapsedMs = Math.min(totalMs, Math.max(0, now - session.startedAt));
   const remainingMs = Math.max(0, totalMs - elapsedMs);
   const focusProgress = session.kind === "focus" ? remainingMs / totalMs : 0.72;
   const candleHeight = `${Math.max(7, focusProgress * 88)}%`;
-  const breathingCycle = Math.min(4, Math.floor(elapsedMs / 14_000));
-  const phaseElapsed = elapsedMs % 14_000;
-  const inhaling = phaseElapsed < 7_000;
-  const phaseProgress = (phaseElapsed % 7_000) / 7_000;
+  const breathingCycle = Math.min(4, Math.floor(elapsedMs / 10_000));
+  const phaseElapsed = elapsedMs % 10_000;
+  const inhaling = phaseElapsed < 5_000;
+  const phaseProgress = (phaseElapsed % 5_000) / 5_000;
   const breathScale = inhaling
     ? 0.72 + phaseProgress * 0.34
     : 1.06 - phaseProgress * 0.34;
@@ -4099,6 +4264,7 @@ function LumeStandby({
   useEffect(() => {
     setNow(Date.now());
     setFinished(false);
+    setShowTimer(true);
     const timer = window.setInterval(() => {
       const nextNow = Date.now();
       setNow(nextNow);
@@ -4116,6 +4282,21 @@ function LumeStandby({
     return () => window.clearTimeout(timer);
   }, [finished, onClose, session.kind]);
 
+  useEffect(() => {
+    if (session.kind !== "focus") return;
+    const toggleTimer = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("button, input, textarea, select") || target?.isContentEditable)
+        return;
+      if (event.code === "Space") {
+        event.preventDefault();
+        setShowTimer((visible) => !visible);
+      }
+    };
+    window.addEventListener("keydown", toggleTimer);
+    return () => window.removeEventListener("keydown", toggleTimer);
+  }, [session.kind]);
+
   return (
     <section
       className={`lume-standby ${session.kind === "breathing" ? "is-breathing" : "is-focus"} ${finished ? "is-finished" : ""}`}
@@ -4131,13 +4312,18 @@ function LumeStandby({
         <span className="eyebrow">Lume / {session.kind === "focus" ? "standby" : "respiro"}</span>
         {session.kind === "focus" ? (
           <>
-            <strong>{finished ? "Tempo concluso" : formatClock(remainingMs)}</strong>
-            <p>{finished ? "La fiamma si spegne. Torniamo allo studio." : "Lascia che il tempo passi, senza guardarlo correre."}</p>
+            <strong className={!finished && !showTimer ? "timer-hidden" : ""}>
+              {finished ? "Tempo concluso" : formatClock(remainingMs)}
+            </strong>
+            {!finished && showTimer && (
+              <small className="timer-visibility-hint">Premi la barra spaziatrice per nascondere il timer</small>
+            )}
+            <p>{finished ? "La fiamma si spegne. La sessione è conclusa." : "Questo tempo è tuo: resta con quello che stai studiando."}</p>
           </>
         ) : (
           <>
             <strong>{finished ? "Hai finito" : inhaling ? "Inspira" : "Espira"}</strong>
-            <p>{finished ? "Cinque respiri. Ora puoi tornare." : `${breathingCycle + 1} di 5 · segui il cerchio per 7 secondi`}</p>
+            <p>{finished ? "Cinque respiri. Ora puoi tornare." : `${breathingCycle + 1} di 5 · segui il cerchio per 5 secondi`}</p>
           </>
         )}
       </div>
@@ -4158,9 +4344,14 @@ function LumeStandby({
           <span className="candle-aura" />
           <span className="candle-flame" />
           <span className="candle-smoke" />
-          <span className="candle-crop">
-            <img src="./lume-candle.png" alt="" />
+          <span className="candle-body">
+            <i className="candle-rim" />
+            <i className="candle-wick" />
+            <i className="wax-drip wax-drip-one" />
+            <i className="wax-drip wax-drip-two" />
+            <i className="candle-shine" />
           </span>
+          <span className="candle-shadow" />
         </div>
       </div>
     </section>
@@ -4256,18 +4447,39 @@ function SoundPanel({
 function MobileNav({
   view,
   onNavigate,
-  onCreate,
+  hasFolders,
+  onCreateFolder,
+  onCreateSet,
 }: {
   view: View;
   onNavigate: (view: View) => void;
-  onCreate: () => void;
+  hasFolders: boolean;
+  onCreateFolder: () => void;
+  onCreateSet: () => void;
 }) {
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
   return (
     <nav className="mobile-nav" aria-label="Navigazione mobile">
       <button className={view.name === "home" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "home" })}><span aria-hidden="true">⌂</span>Spazio</button>
       <button className={view.name === "library" || view.name === "folder" || view.name === "deck" || view.name === "study" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "library" })}><span aria-hidden="true">▱</span>Cartelle</button>
-      <button className="mobile-add" type="button" onClick={onCreate} aria-label="Nuovo set">＋</button>
+      <button
+        className="mobile-add"
+        type="button"
+        onClick={() => setCreateMenuOpen((open) => !open)}
+        aria-label="Crea cartella o set"
+        aria-expanded={createMenuOpen}
+      >＋</button>
       <button className={view.name === "community" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "community" })}><span aria-hidden="true">⌕</span>Esplora</button>
+      {createMenuOpen && (
+        <div className="mobile-create-menu">
+          <button type="button" onClick={() => { setCreateMenuOpen(false); onCreateFolder(); }}>
+            <i aria-hidden="true" /><span><strong>Nuova cartella</strong><small>Raccogli più set</small></span>
+          </button>
+          <button type="button" disabled={!hasFolders} onClick={() => { setCreateMenuOpen(false); onCreateSet(); }}>
+            <b aria-hidden="true">Aa</b><span><strong>Nuovo set</strong><small>Scegli poi la cartella</small></span>
+          </button>
+        </div>
+      )}
     </nav>
   );
 }

@@ -36,10 +36,14 @@ test("renders the Lume application shell", async () => {
   assert.match(html, /Fai il login per salvare i tuoi set/);
   assert.match(html, /Flashcard a caso/);
   assert.match(html, /Continua a studiare/);
+  assert.match(html, /Preferenze/);
+  assert.match(html, /Standby e respiro Lume/);
+  assert.match(html, /Lume Sans/);
   assert.match(html, /favicon\.svg/);
   assert.match(html, /Esplora/);
   assert.match(html, /Flashcard pubbliche/);
-  assert.match(html, /Accedi/);
+  assert.match(html, /Preferenze e accesso/);
   assert.doesNotMatch(html, /Recupero attivo/);
+  assert.doesNotMatch(html, /📚|🧠|🎨|💬/u);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });

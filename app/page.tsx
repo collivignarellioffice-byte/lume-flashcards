@@ -34,6 +34,7 @@ type Card = {
 };
 
 type FontChoice =
+  | "lume"
   | "mono"
   | "helvetica"
   | "caecilia"
@@ -71,6 +72,9 @@ type Settings = {
   theme: "light" | "dark";
   font: FontChoice;
   volume: number;
+  focusMinutes: number;
+  breathingIntervalMinutes: number;
+  typographyRevision: number;
 };
 
 type View =
@@ -117,6 +121,10 @@ type PublicDeck = Deck & {
 };
 
 type SoundMode = "off" | "rain" | "brown" | "bach";
+
+type LumeSession =
+  | { kind: "focus"; durationMs: number; startedAt: number }
+  | { kind: "breathing"; startedAt: number; automatic: boolean };
 
 type ImportPair = {
   front: string;
@@ -165,6 +173,11 @@ const fontOptions: Array<{
   label: string;
   family: string;
 }> = [
+  {
+    value: "lume",
+    label: "Lume Sans",
+    family: '"Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif',
+  },
   {
     value: "mono",
     label: "Mono",
@@ -232,14 +245,12 @@ const palettes = [
   { name: "Ocra", color: "#b4863e", card: "#f2e6c9" },
 ];
 
-const emojiOptions = ["📚", "🧠", "📝", "🎨", "🌍", "🔬", "🏛️", "💬", "✨", "📌"];
-
 const demoFolders: Folder[] = [
   {
     id: DEFAULT_FOLDER_ID,
     title: "Cartella prova",
     color: "#e8c47d",
-    emoji: "📚",
+    emoji: "",
     createdAt: 1,
   },
 ];
@@ -248,7 +259,7 @@ const demoDecks: Deck[] = [
   {
     id: "psicologia-cognitiva",
     folderId: DEFAULT_FOLDER_ID,
-    emoji: "🧠",
+    emoji: "",
     title: "Psicologia cognitiva",
     description: "Memoria, attenzione e apprendimento",
     color: "#bf664f",
@@ -305,7 +316,7 @@ const demoDecks: Deck[] = [
   {
     id: "storia-design",
     folderId: DEFAULT_FOLDER_ID,
-    emoji: "🎨",
+    emoji: "",
     title: "Storia del design",
     description: "Movimenti, oggetti e progettisti",
     color: "#775566",
@@ -347,7 +358,7 @@ const demoDecks: Deck[] = [
   {
     id: "inglese-c1",
     folderId: DEFAULT_FOLDER_ID,
-    emoji: "💬",
+    emoji: "",
     title: "English · C1",
     description: "Lessico per scrittura e conversazione",
     color: "#668171",
@@ -388,7 +399,7 @@ const demoCommunityDecks: PublicDeck[] = [
     ownerId: "lume-curated",
     author: "Lume Curated",
     folderId: "community",
-    emoji: "🧬",
+    emoji: "",
     title: "Neuroscienze essenziali",
     description: "Neuroni, sinapsi e plasticità cerebrale",
     color: "#526b84",
@@ -408,7 +419,7 @@ const demoCommunityDecks: PublicDeck[] = [
     ownerId: "studio-aperto",
     author: "Studio Aperto",
     folderId: "community",
-    emoji: "🖼️",
+    emoji: "",
     title: "Avanguardie artistiche",
     description: "Un ripasso rapido dal Futurismo al Surrealismo",
     color: "#b4863e",
@@ -428,7 +439,7 @@ const demoCommunityDecks: PublicDeck[] = [
     ownerId: "language-notes",
     author: "Language Notes",
     folderId: "community",
-    emoji: "✍️",
+    emoji: "",
     title: "Academic English",
     description: "Espressioni utili per saggi e presentazioni",
     color: "#668171",
@@ -446,8 +457,11 @@ const demoCommunityDecks: PublicDeck[] = [
 
 const defaultSettings: Settings = {
   theme: "light",
-  font: "helvetica",
+  font: "lume",
   volume: 0.28,
+  focusMinutes: 25,
+  breathingIntervalMinutes: 0,
+  typographyRevision: 2,
 };
 
 function sanitizeRichText(value: unknown) {
@@ -557,7 +571,7 @@ function normalizeFolders(value: unknown): Folder[] {
             ? candidate.title
             : `Cartella ${index + 1}`,
         color: typeof candidate.color === "string" ? candidate.color : "#e8c47d",
-        emoji: typeof candidate.emoji === "string" ? candidate.emoji : emojiOptions[index % emojiOptions.length],
+        emoji: "",
         createdAt: typeof candidate.createdAt === "number" ? candidate.createdAt : Date.now() + index,
       };
     });
@@ -601,10 +615,7 @@ function normalizeDecks(value: unknown): Deck[] {
           typeof candidate.folderId === "string"
             ? candidate.folderId
             : DEFAULT_FOLDER_ID,
-        emoji:
-          typeof candidate.emoji === "string"
-            ? candidate.emoji
-            : emojiOptions[(index + 1) % emojiOptions.length],
+        emoji: "",
         title,
         description:
           typeof candidate.description === "string" ? candidate.description : "",
@@ -704,8 +715,9 @@ export default function Home() {
   const [authResolved, setAuthResolved] = useState(!firebaseAuth);
   const [authMessage, setAuthMessage] = useState("");
   const [cloudReady, setCloudReady] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [soundPanelOpen, setSoundPanelOpen] = useState(false);
+  const [lumePanelOpen, setLumePanelOpen] = useState(false);
+  const [lumeSession, setLumeSession] = useState<LumeSession>();
   const [soundMode, setSoundMode] = useState<SoundMode>("off");
   const [study, setStudy] = useState<StudySession>();
   const [studyRequest, setStudyRequest] = useState<StudyRequest>();
@@ -732,11 +744,15 @@ export default function Home() {
             : demoFolders,
         );
         if (storedSettings) {
-          const parsedSettings = JSON.parse(storedSettings);
+          const parsedSettings = JSON.parse(storedSettings) as Partial<Settings>;
           setSettings({
             ...defaultSettings,
             ...parsedSettings,
-            font: normalizeFont(parsedSettings.font),
+            font:
+              parsedSettings.typographyRevision === 2
+                ? normalizeFont(parsedSettings.font)
+                : "lume",
+            typographyRevision: 2,
           });
         }
       } catch {
@@ -828,6 +844,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => stopSound, [stopSound]);
+
+  useEffect(() => {
+    if (!hydrated || lumeSession || settings.breathingIntervalMinutes <= 0)
+      return;
+    const timer = window.setTimeout(() => {
+      setLumeSession({
+        kind: "breathing",
+        startedAt: Date.now(),
+        automatic: true,
+      });
+    }, settings.breathingIntervalMinutes * 60_000);
+    return () => window.clearTimeout(timer);
+  }, [hydrated, lumeSession, settings.breathingIntervalMinutes]);
 
   const playSound = (mode: SoundMode) => {
     stopSound();
@@ -959,7 +988,11 @@ export default function Home() {
             setSettings((current) => ({
               ...current,
               ...remoteSettings,
-              font: normalizeFont(remoteSettings.font),
+              font:
+                remoteSettings.typographyRevision === 2
+                  ? normalizeFont(remoteSettings.font)
+                  : "lume",
+              typographyRevision: 2,
             }));
           }
         } else {
@@ -1079,8 +1112,8 @@ export default function Home() {
 
   const navigate = (next: View) => {
     setView(next);
-    setSettingsOpen(false);
     setSoundPanelOpen(false);
+    setLumePanelOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -1440,8 +1473,8 @@ export default function Home() {
           font={settings.font}
           userEmail={user?.email ?? undefined}
           soundMode={soundMode}
-          settingsOpen={settingsOpen}
           soundPanelOpen={soundPanelOpen}
+          lumePanelOpen={lumePanelOpen}
           onToggleTheme={() =>
             setSettings((current) => ({
               ...current,
@@ -1451,29 +1484,19 @@ export default function Home() {
           onFontChange={(font) =>
             setSettings((current) => ({ ...current, font }))
           }
-          onToggleSettings={() => {
-            setSettingsOpen((open) => !open);
-            setSoundPanelOpen(false);
-          }}
           onToggleSound={() => {
             setSoundPanelOpen((open) => !open);
-            setSettingsOpen(false);
+            setLumePanelOpen(false);
+          }}
+          onToggleLume={() => {
+            setLumePanelOpen((open) => !open);
+            setSoundPanelOpen(false);
           }}
           onOpenAccount={() => {
             setAuthMessage("");
             setAccountOpen(true);
           }}
         />
-
-        {settingsOpen && (
-          <SettingsPanel
-            settings={settings}
-            onChange={setSettings}
-            onExport={exportData}
-            onImport={() => fileInputRef.current?.click()}
-            onClose={() => setSettingsOpen(false)}
-          />
-        )}
 
         {soundPanelOpen && (
           <SoundPanel
@@ -1484,6 +1507,32 @@ export default function Home() {
               setSettings((current) => ({ ...current, volume }))
             }
             onClose={() => setSoundPanelOpen(false)}
+          />
+        )}
+
+        {lumePanelOpen && (
+          <LumePanel
+            minutes={settings.focusMinutes}
+            onMinutes={(focusMinutes) =>
+              setSettings((current) => ({ ...current, focusMinutes }))
+            }
+            onStartFocus={() => {
+              setLumePanelOpen(false);
+              setLumeSession({
+                kind: "focus",
+                durationMs: settings.focusMinutes * 60_000,
+                startedAt: Date.now(),
+              });
+            }}
+            onStartBreathing={() => {
+              setLumePanelOpen(false);
+              setLumeSession({
+                kind: "breathing",
+                startedAt: Date.now(),
+                automatic: false,
+              });
+            }}
+            onClose={() => setLumePanelOpen(false)}
           />
         )}
 
@@ -1709,8 +1758,23 @@ export default function Home() {
       {accountOpen && (
         <AccountModal
           user={user}
+          settings={settings}
           configured={firebaseConfigured}
           message={authMessage}
+          onSettingsChange={setSettings}
+          onExport={exportData}
+          onImport={() => {
+            setAccountOpen(false);
+            fileInputRef.current?.click();
+          }}
+          onStartBreathing={() => {
+            setAccountOpen(false);
+            setLumeSession({
+              kind: "breathing",
+              startedAt: Date.now(),
+              automatic: false,
+            });
+          }}
           onEmail={async (email) => {
             if (!firebaseAuth) {
               setAuthMessage(
@@ -1760,6 +1824,13 @@ export default function Home() {
             setAccountOpen(false);
           }}
           onClose={() => setAccountOpen(false)}
+        />
+      )}
+
+      {lumeSession && (
+        <LumeStandby
+          session={lumeSession}
+          onClose={() => setLumeSession(undefined)}
         />
       )}
 
@@ -2085,7 +2156,7 @@ function Sidebar({
                       onNavigate({ name: "folder", folderId: folder.id });
                     }}
                   >
-                    <i style={{ background: folder.color }}>{folder.emoji}</i>
+                    <i style={{ background: folder.color }} aria-hidden="true" />
                     <span>{folder.title}</span>
                     <small>{folderDecks.length}</small>
                   </button>
@@ -2099,7 +2170,7 @@ function Sidebar({
                         key={deck.id}
                         onClick={() => onNavigate({ name: "deck", deckId: deck.id })}
                       >
-                        <span aria-hidden="true">{deck.emoji}</span>{deck.title}
+                        {deck.title}
                       </button>
                     ))}
                     <button className="sidebar-new-set" type="button" onClick={() => onCreateSet(folder.id)}>
@@ -2128,24 +2199,24 @@ function Topbar({
   font,
   userEmail,
   soundMode,
-  settingsOpen,
   soundPanelOpen,
+  lumePanelOpen,
   onToggleTheme,
   onFontChange,
-  onToggleSettings,
   onToggleSound,
+  onToggleLume,
   onOpenAccount,
 }: {
   theme: Settings["theme"];
   font: FontChoice;
   userEmail?: string;
   soundMode: SoundMode;
-  settingsOpen: boolean;
   soundPanelOpen: boolean;
+  lumePanelOpen: boolean;
   onToggleTheme: () => void;
   onFontChange: (font: FontChoice) => void;
-  onToggleSettings: () => void;
   onToggleSound: () => void;
+  onToggleLume: () => void;
   onOpenAccount: () => void;
 }) {
   return (
@@ -2155,6 +2226,15 @@ function Topbar({
       </div>
       <p><strong>Workspace</strong><span>/</span> Il mio spazio</p>
       <div className="top-actions">
+        <button
+          className={`icon-button lume-mode-button ${lumePanelOpen ? "active" : ""}`}
+          type="button"
+          onClick={onToggleLume}
+          aria-label="Standby e respiro Lume"
+          aria-expanded={lumePanelOpen}
+        >
+          <span className="mini-candle-icon" aria-hidden="true"><i /></span>
+        </button>
         <button
           className={`icon-button sound-button ${soundMode !== "off" ? "is-playing" : ""} ${soundPanelOpen ? "active" : ""}`}
           type="button"
@@ -2192,22 +2272,13 @@ function Topbar({
           <span aria-hidden="true">☾</span>
         </button>
         <button
-          className={`icon-button ${settingsOpen ? "active" : ""}`}
-          type="button"
-          onClick={onToggleSettings}
-          aria-label="Preferenze"
-          aria-expanded={settingsOpen}
-        >
-          <span aria-hidden="true">•••</span>
-        </button>
-        <button
           className="account-button"
           type="button"
           onClick={onOpenAccount}
-          aria-label={userEmail ? `Profilo ${userEmail}` : "Accedi o crea un profilo"}
+          aria-label={userEmail ? `Preferenze e profilo ${userEmail}` : "Preferenze e accesso"}
         >
           <span aria-hidden="true">◎</span>
-          <span>{userEmail ? "Profilo" : "Accedi"}</span>
+          <span>Preferenze</span>
         </button>
       </div>
     </header>
@@ -2418,9 +2489,18 @@ function RandomFlashcard({
             aria-label={flipped ? "Mostra il fronte della flashcard" : "Mostra il significato"}
             style={{ fontFamily: fontFamily(selected.font) }}
           >
-            <small>{flipped ? "Significato" : selected.deckTitle}</small>
-            <RichText value={flipped ? selected.card.back : selected.card.front} />
-            <em>{flipped ? "Torna alla domanda" : "Gira la carta"}</em>
+            <span className="random-card-inner">
+              <span className="random-card-side random-card-front">
+                <small>{selected.deckTitle}</small>
+                <RichText value={selected.card.front} />
+                <em>Gira la carta</em>
+              </span>
+              <span className="random-card-side random-card-back">
+                <small>Significato</small>
+                <RichText value={selected.card.back} />
+                <em>Torna alla domanda</em>
+              </span>
+            </span>
           </button>
           <button
             className="random-continue-button"
@@ -2450,7 +2530,6 @@ function FolderTile({
   onOpen: () => void;
 }) {
   const cards = decks.reduce((sum, deck) => sum + deck.cards.length, 0);
-  const previews = decks.slice(0, 3);
   return (
     <button
       className="folder-tile"
@@ -2460,9 +2539,7 @@ function FolderTile({
     >
       <span className="folder-papers" aria-hidden="true">
         {[0, 1, 2].map((index) => (
-          <i key={index} style={{ "--paper-index": index } as React.CSSProperties}>
-            {previews[index]?.emoji ?? (index === 0 ? folder.emoji : "")}
-          </i>
+          <i key={index} style={{ "--paper-index": index } as React.CSSProperties} />
         ))}
       </span>
       <span className="folder-back" aria-hidden="true" />
@@ -2487,7 +2564,6 @@ function SetCover({
       <span className="set-cover-copy">
         <small>{deck.visibility === "public" ? "◉ Pubblico" : "Set privato"}</small>
         <strong>{deck.title}</strong>
-        <i aria-hidden="true">{deck.emoji}</i>
         <span>{deck.cards.length} carte{deck.keywordHelp ? " · Keyword Help" : ""}</span>
       </span>
       <span
@@ -2501,7 +2577,7 @@ function SetCover({
       >
         <small>Lume / study set</small>
         <strong>{deck.title}</strong>
-        <b aria-hidden="true">{deck.emoji}</b>
+        <b aria-hidden="true">{String(deck.cards.length).padStart(2, "0")}</b>
         <i>{deck.description || "Domande e risposte"}</i>
       </span>
     </button>
@@ -2676,7 +2752,7 @@ function FolderPage({
       </button>
       <div className="folder-page-heading">
         <div>
-          <span className="folder-page-emoji" style={{ background: folder.color }}>{folder.emoji}</span>
+          <span className="folder-page-emoji" style={{ background: folder.color }} aria-hidden="true" />
           <span className="eyebrow">Fascicolo</span>
           <h1>{folder.title}</h1>
           <p>{decks.length} set · {cards} flashcard</p>
@@ -2754,7 +2830,7 @@ function DeckDetail({
         <div className="hero-card-stack" aria-hidden="true">
           <i />
           <i />
-          <b>{deck.emoji}</b>
+          <b>L</b>
         </div>
       </section>
 
@@ -3379,8 +3455,13 @@ function ImportModal({
 
 function AccountModal({
   user,
+  settings,
   configured,
   message,
+  onSettingsChange,
+  onExport,
+  onImport,
+  onStartBreathing,
   onEmail,
   onGoogle,
   onLogout,
@@ -3388,8 +3469,13 @@ function AccountModal({
   onClose,
 }: {
   user: FirebaseUser | null;
+  settings: Settings;
   configured: boolean;
   message: string;
+  onSettingsChange: (settings: Settings) => void;
+  onExport: () => void;
+  onImport: () => void;
+  onStartBreathing: () => void;
   onEmail: (email: string) => Promise<void>;
   onGoogle: () => Promise<void>;
   onLogout: () => Promise<void>;
@@ -3411,54 +3497,139 @@ function AccountModal({
       >
         <div className="modal-header">
           <div>
-            <span className="eyebrow">Lume / il tuo spazio</span>
-            <h2 id="account-modal-title">{user ? "Il tuo profilo" : "Ritrova le tue flashcard ovunque."}</h2>
+            <span className="eyebrow">Lume / il tuo ritmo</span>
+            <h2 id="account-modal-title">Preferenze</h2>
           </div>
           <button className="modal-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
         </div>
 
-        {user ? (
-          <div className="signed-in-card">
-            <span aria-hidden="true">◎</span>
-            <div><small>Accesso effettuato</small><strong>{user.email}</strong></div>
-            <button type="button" onClick={() => void onLogout()}>Esci dal profilo</button>
+        <section className="preferences-section">
+          <div className="preferences-heading">
+            <span className="eyebrow">Profilo</span>
+            <p>Salva cartelle, set e preferenze e ritrovali sui tuoi dispositivi.</p>
           </div>
-        ) : (
-          <>
-            <p className="account-intro">Accedi gratuitamente per sincronizzare cartelle, set, carte e preferenze tra i tuoi dispositivi.</p>
-            <button className="google-auth-button" type="button" onClick={() => void onGoogle()}>
-              <span aria-hidden="true">G</span> Continua con Google
-            </button>
-            <div className="auth-divider"><span>oppure</span></div>
-            <form
-              className="email-auth-form"
-              onSubmit={async (event) => {
-                event.preventDefault();
-                if (!email.trim()) return;
-                setSending(true);
-                await onEmail(email.trim());
-                setSending(false);
-              }}
-            >
-              <label className="field">
-                <span>La tua email</span>
-                <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nome@email.it" required />
-              </label>
-              <button className="primary-button" type="submit" disabled={sending}>
-                {sending ? "Invio…" : "Ricevi il link di accesso"}
+          {user ? (
+            <div className="signed-in-card">
+              <span aria-hidden="true">◎</span>
+              <div><small>Accesso effettuato</small><strong>{user.email}</strong></div>
+              <button type="button" onClick={() => void onLogout()}>Esci dal profilo</button>
+            </div>
+          ) : (
+            <>
+              <button className="google-auth-button" type="button" onClick={() => void onGoogle()}>
+                <span aria-hidden="true">G</span> Continua con Google
               </button>
-            </form>
-            {message && <p className="form-message">{message}</p>}
-            {!configured && (
-              <p className="auth-config-note">
-                L’interfaccia è pronta. Il login online si attiverà completando il progetto Firebase.
-              </p>
-            )}
-            <button className="continue-local-button" type="button" onClick={onContinueLocal}>
-              Continua senza account <span aria-hidden="true">→</span>
+              <div className="auth-divider"><span>oppure</span></div>
+              <form
+                className="email-auth-form"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  if (!email.trim()) return;
+                  setSending(true);
+                  await onEmail(email.trim());
+                  setSending(false);
+                }}
+              >
+                <label className="field">
+                  <span>La tua email</span>
+                  <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nome@email.it" required />
+                </label>
+                <button className="primary-button" type="submit" disabled={sending}>
+                  {sending ? "Invio…" : "Ricevi il link di accesso"}
+                </button>
+              </form>
+              {message && <p className="form-message">{message}</p>}
+              {!configured && (
+                <p className="auth-config-note">
+                  L’interfaccia è pronta. Il login online si attiverà completando il progetto Firebase.
+                </p>
+              )}
+              <button className="continue-local-button" type="button" onClick={onContinueLocal}>
+                Continua senza account <span aria-hidden="true">→</span>
+              </button>
+            </>
+          )}
+        </section>
+
+        <section className="preferences-section breathing-preferences">
+          <div className="preferences-heading">
+            <span className="eyebrow">Pause Lume</span>
+            <h3>Un respiro ogni tanto.</h3>
+            <p>Cinque respiri guidati: 7 secondi per inspirare e 7 per espirare.</p>
+          </div>
+          <div className="preference-control-row">
+            <label className="field">
+              <span>Ripeti automaticamente</span>
+              <select
+                value={settings.breathingIntervalMinutes}
+                onChange={(event) =>
+                  onSettingsChange({
+                    ...settings,
+                    breathingIntervalMinutes: Number(event.target.value),
+                  })
+                }
+              >
+                <option value={0}>Mai</option>
+                <option value={20}>Ogni 20 minuti</option>
+                <option value={30}>Ogni 30 minuti</option>
+                <option value={45}>Ogni 45 minuti</option>
+                <option value={60}>Ogni 60 minuti</option>
+              </select>
+            </label>
+            <button className="secondary-button" type="button" onClick={onStartBreathing}>
+              Respira adesso
             </button>
-          </>
-        )}
+          </div>
+        </section>
+
+        <section className="preferences-section">
+          <div className="preferences-heading">
+            <span className="eyebrow">Lettura</span>
+            <h3>Un carattere più quieto.</h3>
+          </div>
+          <div className="preference-control-row reading-preferences">
+            <label className="field">
+              <span>Font generale</span>
+              <select
+                value={settings.font}
+                onChange={(event) =>
+                  onSettingsChange({
+                    ...settings,
+                    font: event.target.value as FontChoice,
+                    typographyRevision: 2,
+                  })
+                }
+              >
+                {fontOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="preference-theme-buttons" aria-label="Tema">
+              <button
+                className={settings.theme === "light" ? "selected" : ""}
+                type="button"
+                onClick={() => onSettingsChange({ ...settings, theme: "light" })}
+              >Chiaro</button>
+              <button
+                className={settings.theme === "dark" ? "selected" : ""}
+                type="button"
+                onClick={() => onSettingsChange({ ...settings, theme: "dark" })}
+              >Scuro</button>
+            </div>
+          </div>
+        </section>
+
+        <section className="preferences-section backup-preferences">
+          <div className="preferences-heading">
+            <span className="eyebrow">Le tue carte, sempre tue</span>
+            <p>Scarica un backup oppure importa quello creato su un altro dispositivo.</p>
+          </div>
+          <div>
+            <button className="secondary-button" type="button" onClick={onExport}>Esporta</button>
+            <button className="secondary-button" type="button" onClick={onImport}>Importa</button>
+          </div>
+        </section>
       </section>
     </div>
   );
@@ -3475,7 +3646,6 @@ function FolderModal({
 }) {
   const [title, setTitle] = useState(folder?.title ?? "");
   const [color, setColor] = useState(folder?.color ?? "#e8c47d");
-  const [emoji, setEmoji] = useState(folder?.emoji ?? "📚");
   useEscape(onClose);
 
   return (
@@ -3489,7 +3659,7 @@ function FolderModal({
         onSubmit={(event) => {
           event.preventDefault();
           if (!title.trim()) return;
-          onSave({ title: title.trim(), color, emoji });
+          onSave({ title: title.trim(), color, emoji: folder?.emoji ?? "" });
         }}
       >
         <div className="modal-header">
@@ -3512,27 +3682,13 @@ function FolderModal({
             />
           </label>
         </div>
-        <fieldset className="emoji-fieldset">
-          <legend>Emoji della cartella</legend>
-          <div className="emoji-list">
-            {emojiOptions.map((option) => (
-              <button
-                key={option}
-                className={emoji === option ? "selected" : ""}
-                type="button"
-                onClick={() => setEmoji(option)}
-                aria-label={`Usa ${option} come emoji`}
-              >{option}</button>
-            ))}
-          </div>
-        </fieldset>
         <div className="folder-color-row">
           <label>
             <span>Colore della cartella</span>
             <input type="color" value={color} onChange={(event) => setColor(event.target.value)} />
           </label>
           <div className="folder-mini-preview" style={{ "--folder": color } as React.CSSProperties}>
-            <i>{emoji}</i><strong>{title || "La tua cartella"}</strong>
+            <i aria-hidden="true" /><strong>{title || "La tua cartella"}</strong>
           </div>
         </div>
         <div className="modal-actions">
@@ -3565,7 +3721,6 @@ function DeckModal({
   const [cardColor, setCardColor] = useState(deck?.cardColor ?? palettes[0].card);
   const [font, setFont] = useState<FontChoice>(deck?.font ?? defaultFont);
   const [folderId, setFolderId] = useState(deck?.folderId ?? defaultFolderId);
-  const [emoji, setEmoji] = useState(deck?.emoji ?? "📚");
   const [visibility, setVisibility] = useState<Deck["visibility"]>(deck?.visibility ?? "private");
   const [keywordHelp, setKeywordHelp] = useState(deck?.keywordHelp ?? false);
 
@@ -3581,7 +3736,7 @@ function DeckModal({
       cardColor,
       font,
       folderId,
-      emoji,
+      emoji: deck?.emoji ?? "",
       visibility,
       keywordHelp,
       lastStudied: deck?.lastStudied,
@@ -3630,7 +3785,7 @@ function DeckModal({
             <span>Cartella</span>
             <select value={folderId} onChange={(event) => setFolderId(event.target.value)} required>
               {folders.map((folder) => (
-                <option key={folder.id} value={folder.id}>{folder.emoji} {folder.title}</option>
+                <option key={folder.id} value={folder.id}>{folder.title}</option>
               ))}
             </select>
           </label>
@@ -3705,20 +3860,6 @@ function DeckModal({
           </div>
           <p>Il font verrà usato nel set e durante lo studio.</p>
         </fieldset>
-        <fieldset className="emoji-fieldset">
-          <legend>Emoji della copertina</legend>
-          <div className="emoji-list">
-            {emojiOptions.map((option) => (
-              <button
-                key={option}
-                className={emoji === option ? "selected" : ""}
-                type="button"
-                onClick={() => setEmoji(option)}
-                aria-label={`Usa ${option} come emoji`}
-              >{option}</button>
-            ))}
-          </div>
-        </fieldset>
         <div className="custom-colors">
           <label>
             <span>Colore set</span>
@@ -3736,7 +3877,7 @@ function DeckModal({
               fontFamily: fontFamily(font),
             }}
           >
-            <span style={{ background: cardColor, color: "#2b2925" }}>{emoji}</span>
+            <span style={{ background: cardColor, color: "#2b2925" }}>L</span>
             <strong>{title || "Il tuo set"}</strong>
           </div>
         </div>
@@ -3865,6 +4006,164 @@ function CardModal({
         </div>
       </form>
     </div>
+  );
+}
+
+function LumePanel({
+  minutes,
+  onMinutes,
+  onStartFocus,
+  onStartBreathing,
+  onClose,
+}: {
+  minutes: number;
+  onMinutes: (minutes: number) => void;
+  onStartFocus: () => void;
+  onStartBreathing: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="floating-panel lume-panel" aria-label="Standby Lume">
+      <div className="panel-header">
+        <div><span className="eyebrow">Lume</span><h3>Metti lo studio in pausa.</h3></div>
+        <button type="button" onClick={onClose} aria-label="Chiudi">×</button>
+      </div>
+      <p className="lume-panel-intro">
+        Lo schermo si oscura e la candela misura il tempo senza distrazioni.
+      </p>
+      <label className="field lume-duration-field">
+        <span>Durata dello standby</span>
+        <div>
+          <input
+            type="number"
+            min={1}
+            max={180}
+            value={minutes}
+            onChange={(event) =>
+              onMinutes(Math.min(180, Math.max(1, Number(event.target.value) || 1)))
+            }
+          />
+          <small>minuti</small>
+        </div>
+      </label>
+      <div className="lume-duration-presets" aria-label="Durate rapide">
+        {[10, 25, 45, 60].map((value) => (
+          <button
+            className={minutes === value ? "selected" : ""}
+            type="button"
+            key={value}
+            onClick={() => onMinutes(value)}
+          >{value}</button>
+        ))}
+      </div>
+      <button className="primary-button lume-start-button" type="button" onClick={onStartFocus}>
+        Avvia standby
+      </button>
+      <button className="lume-breathe-now" type="button" onClick={onStartBreathing}>
+        Oppure fai cinque respiri guidati <span aria-hidden="true">→</span>
+      </button>
+    </aside>
+  );
+}
+
+function formatClock(milliseconds: number) {
+  const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function LumeStandby({
+  session,
+  onClose,
+}: {
+  session: LumeSession;
+  onClose: () => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const [finished, setFinished] = useState(false);
+  useEscape(onClose);
+
+  const totalMs = session.kind === "focus" ? session.durationMs : 5 * 14_000;
+  const elapsedMs = Math.min(totalMs, Math.max(0, now - session.startedAt));
+  const remainingMs = Math.max(0, totalMs - elapsedMs);
+  const focusProgress = session.kind === "focus" ? remainingMs / totalMs : 0.72;
+  const candleHeight = `${Math.max(7, focusProgress * 88)}%`;
+  const breathingCycle = Math.min(4, Math.floor(elapsedMs / 14_000));
+  const phaseElapsed = elapsedMs % 14_000;
+  const inhaling = phaseElapsed < 7_000;
+  const phaseProgress = (phaseElapsed % 7_000) / 7_000;
+  const breathScale = inhaling
+    ? 0.72 + phaseProgress * 0.34
+    : 1.06 - phaseProgress * 0.34;
+
+  useEffect(() => {
+    setNow(Date.now());
+    setFinished(false);
+    const timer = window.setInterval(() => {
+      const nextNow = Date.now();
+      setNow(nextNow);
+      if (nextNow - session.startedAt >= totalMs) {
+        setFinished(true);
+        window.clearInterval(timer);
+      }
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [session.startedAt, totalMs]);
+
+  useEffect(() => {
+    if (!finished) return;
+    const timer = window.setTimeout(onClose, session.kind === "focus" ? 1_800 : 900);
+    return () => window.clearTimeout(timer);
+  }, [finished, onClose, session.kind]);
+
+  return (
+    <section
+      className={`lume-standby ${session.kind === "breathing" ? "is-breathing" : "is-focus"} ${finished ? "is-finished" : ""}`}
+      role="dialog"
+      aria-modal="true"
+      aria-label={session.kind === "focus" ? "Timer standby Lume" : "Respirazione guidata Lume"}
+    >
+      <button className="lume-exit-button" type="button" onClick={onClose}>
+        Esci <kbd>esc</kbd>
+      </button>
+
+      <div className="lume-standby-copy" aria-live="polite">
+        <span className="eyebrow">Lume / {session.kind === "focus" ? "standby" : "respiro"}</span>
+        {session.kind === "focus" ? (
+          <>
+            <strong>{finished ? "Tempo concluso" : formatClock(remainingMs)}</strong>
+            <p>{finished ? "La fiamma si spegne. Torniamo allo studio." : "Lascia che il tempo passi, senza guardarlo correre."}</p>
+          </>
+        ) : (
+          <>
+            <strong>{finished ? "Hai finito" : inhaling ? "Inspira" : "Espira"}</strong>
+            <p>{finished ? "Cinque respiri. Ora puoi tornare." : `${breathingCycle + 1} di 5 · segui il cerchio per 7 secondi`}</p>
+          </>
+        )}
+      </div>
+
+      <div className="lume-candle-stage">
+        {session.kind === "breathing" && !finished && (
+          <div
+            className="breathing-ring"
+            style={{ transform: `translate(-50%, -50%) scale(${breathScale})` }}
+            aria-hidden="true"
+          />
+        )}
+        <div
+          className="lume-candle"
+          style={{ "--candle-height": candleHeight } as React.CSSProperties}
+          aria-hidden="true"
+        >
+          <span className="candle-aura" />
+          <span className="candle-flame" />
+          <span className="candle-smoke" />
+          <span className="candle-crop">
+            <img src="./lume-candle.png" alt="" />
+          </span>
+        </div>
+      </div>
+    </section>
   );
 }
 

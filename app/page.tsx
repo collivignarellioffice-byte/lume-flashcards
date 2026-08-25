@@ -89,6 +89,7 @@ type StudyTarget = {
 type StudyRequest = {
   target: StudyTarget;
   cardIds?: string[];
+  startCardId?: string;
 };
 
 type StudyOrder = "sequential" | "random";
@@ -1255,12 +1256,20 @@ export default function Home() {
 
   const startStudy = (request: StudyRequest, order: StudyOrder) => {
     const sourceDecks = resolveStudyDecks(request.target);
-    const originalQueue = request.cardIds?.length
+    const baseQueue = request.cardIds?.length
       ? request.cardIds
       : sourceDecks.flatMap((deck) => deck.cards.map((card) => card.id));
+    const startIndex = request.startCardId
+      ? baseQueue.indexOf(request.startCardId)
+      : -1;
+    const originalQueue = startIndex > 0
+      ? [...baseQueue.slice(startIndex), ...baseQueue.slice(0, startIndex)]
+      : [...baseQueue];
     if (!originalQueue.length) return;
     const queue = order === "random"
-      ? [...originalQueue].sort(() => Math.random() - 0.5)
+      ? request.startCardId && originalQueue[0] === request.startCardId
+        ? [originalQueue[0], ...originalQueue.slice(1).sort(() => Math.random() - 0.5)]
+        : [...originalQueue].sort(() => Math.random() - 0.5)
       : [...originalQueue];
     setStudy({
       target: request.target,
@@ -1488,6 +1497,15 @@ export default function Home() {
               mastery={overallMastery}
               onOpenFolder={(folderId) => navigate({ name: "folder", folderId })}
               onStudy={(deck) => openStudySetup({ kind: "deck", id: deck.id })}
+              onContinueCard={(deckId, cardId) =>
+                startStudy(
+                  {
+                    target: { kind: "deck", id: deckId },
+                    startCardId: cardId,
+                  },
+                  "sequential",
+                )
+              }
               onCreate={() => openCreateDeck(folders[0]?.id)}
               onCreateFolder={openCreateFolder}
               onViewAll={() => navigate({ name: "library" })}
@@ -1823,7 +1841,7 @@ function WelcomeModal({
           <span className="eyebrow">Lume / flashcards</span>
           <h2 id="welcome-modal-title">
             <span>Flashcards.</span>
-            <span>Unlimited learning.</span>
+            <span className="welcome-unlimited">Unlimited learning.</span>
             <em>Free.</em>
           </h2>
           <p>
@@ -1832,23 +1850,27 @@ function WelcomeModal({
           </p>
 
           <div className="welcome-entry-actions">
-            <button
-              className="welcome-entry-button account-entry-button"
-              type="button"
-              onClick={onOpenAccount}
-            >
-              <span>{userEmail ? "Account collegato" : "Salva il tuo studio"}</span>
-              <strong>
-                {!authResolved
-                  ? "Controllo accesso…"
-                  : userEmail ?? "Fai il login"}
-              </strong>
-              <small>
-                {userEmail
-                  ? "Apri e gestisci il tuo profilo"
-                  : "Fai il login per salvare i tuoi set"}
-              </small>
-            </button>
+            {userEmail ? (
+              <div
+                className="welcome-entry-button account-entry-button connected-account"
+                aria-label={`Account collegato: ${userEmail}`}
+              >
+                <span>Account collegato</span>
+                <strong>{userEmail}</strong>
+                <small>I tuoi set vengono salvati nel profilo</small>
+              </div>
+            ) : (
+              <button
+                className="welcome-entry-button account-entry-button"
+                type="button"
+                onClick={onOpenAccount}
+                disabled={!authResolved}
+              >
+                <span>Salva il tuo studio</span>
+                <strong>{authResolved ? "Fai il login" : "Controllo accesso…"}</strong>
+                <small>Fai il login per salvare i tuoi set</small>
+              </button>
+            )}
             <button
               className="welcome-entry-button workspace-entry-button"
               type="button"
@@ -1884,6 +1906,7 @@ function RichTextEditor({
   placeholder,
   autoFocus = false,
   keywordHelp = false,
+  inputRef,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -1891,9 +1914,16 @@ function RichTextEditor({
   placeholder: string;
   autoFocus?: boolean;
   keywordHelp?: boolean;
+  inputRef?: (node: HTMLDivElement | null) => void;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [initialValue] = useState(() => sanitizeRichText(value));
+
+  useEffect(() => {
+    if (!editorRef.current) return;
+    editorRef.current.innerHTML = initialValue;
+    if (autoFocus) editorRef.current.focus();
+  }, [autoFocus, initialValue]);
 
   const applyFormat = (command: "bold" | "italic" | "underline") => {
     editorRef.current?.focus();
@@ -1909,6 +1939,7 @@ function RichTextEditor({
           <button
             className={keywordHelp ? "keyword-format" : ""}
             type="button"
+            tabIndex={-1}
             onMouseDown={(event) => {
               event.preventDefault();
               applyFormat("bold");
@@ -1918,6 +1949,7 @@ function RichTextEditor({
           ><strong>B</strong></button>
           <button
             type="button"
+            tabIndex={-1}
             onMouseDown={(event) => {
               event.preventDefault();
               applyFormat("italic");
@@ -1927,6 +1959,7 @@ function RichTextEditor({
           ><em>I</em></button>
           <button
             type="button"
+            tabIndex={-1}
             onMouseDown={(event) => {
               event.preventDefault();
               applyFormat("underline");
@@ -1937,16 +1970,19 @@ function RichTextEditor({
           {keywordHelp && <small>Il neretto identifica le keywords</small>}
         </div>
         <div
-          ref={editorRef}
+          ref={(node) => {
+            editorRef.current = node;
+            inputRef?.(node);
+          }}
           className="rich-editor"
           contentEditable
+          tabIndex={0}
           suppressContentEditableWarning
           role="textbox"
           aria-label={label}
           aria-multiline="true"
           data-placeholder={placeholder}
           autoFocus={autoFocus}
-          dangerouslySetInnerHTML={{ __html: initialValue }}
           onInput={(event) => onChange(sanitizeRichText(event.currentTarget.innerHTML))}
           onBlur={(event) => onChange(sanitizeRichText(event.currentTarget.innerHTML))}
         />
@@ -2186,6 +2222,7 @@ function Dashboard({
   mastery: masteryValue,
   onOpenFolder,
   onStudy,
+  onContinueCard,
   onCreate,
   onCreateFolder,
   onViewAll,
@@ -2197,6 +2234,7 @@ function Dashboard({
   mastery: number;
   onOpenFolder: (id: string) => void;
   onStudy: (deck: Deck) => void;
+  onContinueCard: (deckId: string, cardId: string) => void;
   onCreate: () => void;
   onCreateFolder: () => void;
   onViewAll: () => void;
@@ -2250,7 +2288,7 @@ function Dashboard({
           )}
         </div>
 
-        <RandomFlashcard decks={decks} />
+        <RandomFlashcard decks={decks} onContinue={onContinueCard} />
       </section>
 
       <section className="overview-section">
@@ -2314,12 +2352,19 @@ function Dashboard({
   );
 }
 
-function RandomFlashcard({ decks }: { decks: Deck[] }) {
+function RandomFlashcard({
+  decks,
+  onContinue,
+}: {
+  decks: Deck[];
+  onContinue: (deckId: string, cardId: string) => void;
+}) {
   const cards = useMemo(
     () =>
       decks.flatMap((deck) =>
         deck.cards.map((card) => ({
           key: `${deck.id}:${card.id}`,
+          deckId: deck.id,
           card,
           deckTitle: deck.title,
           font: deck.font,
@@ -2364,18 +2409,27 @@ function RandomFlashcard({ decks }: { decks: Deck[] }) {
       </div>
 
       {selected ? (
-        <button
-          className={flipped ? "random-flashcard-face is-flipped" : "random-flashcard-face"}
-          type="button"
-          onClick={() => setFlipped((value) => !value)}
-          aria-pressed={flipped}
-          aria-label={flipped ? "Mostra il fronte della flashcard" : "Mostra il significato"}
-          style={{ fontFamily: fontFamily(selected.font) }}
-        >
-          <small>{flipped ? "Significato" : selected.deckTitle}</small>
-          <RichText value={flipped ? selected.card.back : selected.card.front} />
-          <em>{flipped ? "Torna alla domanda" : "Gira la carta"}</em>
-        </button>
+        <>
+          <button
+            className={flipped ? "random-flashcard-face is-flipped" : "random-flashcard-face"}
+            type="button"
+            onClick={() => setFlipped((value) => !value)}
+            aria-pressed={flipped}
+            aria-label={flipped ? "Mostra il fronte della flashcard" : "Mostra il significato"}
+            style={{ fontFamily: fontFamily(selected.font) }}
+          >
+            <small>{flipped ? "Significato" : selected.deckTitle}</small>
+            <RichText value={flipped ? selected.card.back : selected.card.front} />
+            <em>{flipped ? "Torna alla domanda" : "Gira la carta"}</em>
+          </button>
+          <button
+            className="random-continue-button"
+            type="button"
+            onClick={() => onContinue(selected.deckId, selected.card.id)}
+          >
+            Continua a studiare <span aria-hidden="true">→</span>
+          </button>
+        </>
       ) : (
         <div className="random-flashcard-empty">
           <strong>Qui apparirà una carta a sorpresa.</strong>
@@ -3707,7 +3761,16 @@ function CardModal({
   onClose: () => void;
 }) {
   const [pairs, setPairs] = useState([{ front: "", back: "" }]);
+  const frontEditorRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const pendingFocusIndex = useRef<number | undefined>(undefined);
   useEscape(onClose);
+
+  useEffect(() => {
+    const index = pendingFocusIndex.current;
+    if (typeof index !== "number" || !frontEditorRefs.current[index]) return;
+    frontEditorRefs.current[index]?.focus();
+    pendingFocusIndex.current = undefined;
+  }, [pairs.length]);
 
   const updatePair = (index: number, field: "front" | "back", value: string) => {
     setPairs((current) =>
@@ -3755,6 +3818,9 @@ function CardModal({
               <span className="pair-number">{String(index + 1).padStart(2, "0")}</span>
               <RichTextEditor
                 autoFocus={index === 0}
+                inputRef={(node) => {
+                  frontEditorRefs.current[index] = node;
+                }}
                 value={pair.front}
                 onChange={(value) => updatePair(index, "front", value)}
                 label="Domanda o termine"
@@ -3772,6 +3838,7 @@ function CardModal({
                 <button
                   className="remove-pair"
                   type="button"
+                  tabIndex={-1}
                   onClick={() => setPairs((current) => current.filter((_, i) => i !== index))}
                   aria-label={`Rimuovi la coppia ${index + 1}`}
                 >×</button>
@@ -3782,7 +3849,10 @@ function CardModal({
         <button
           className="add-pair-button"
           type="button"
-          onClick={() => setPairs((current) => [...current, { front: "", back: "" }])}
+          onClick={() => {
+            pendingFocusIndex.current = pairs.length;
+            setPairs((current) => [...current, { front: "", back: "" }]);
+          }}
         >
           <span aria-hidden="true">＋</span> Aggiungi un’altra coppia
         </button>

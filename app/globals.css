@@ -5258,8 +5258,12 @@ body {
 }
 
 .welcome-modal-copy h2 em {
-  color: var(--accent);
+  color: var(--sage);
   font-style: normal;
+}
+
+.welcome-modal-copy h2 .welcome-unlimited {
+  color: var(--accent);
 }
 
 .welcome-modal-copy > p {
@@ -5297,6 +5301,20 @@ body {
 .welcome-entry-button:hover {
   border-color: color-mix(in srgb, var(--ink) 34%, var(--line));
   transform: translateY(-2px);
+}
+
+.welcome-entry-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.connected-account {
+  cursor: default;
+}
+
+.connected-account:hover {
+  border-color: var(--line);
+  transform: none;
 }
 
 .welcome-entry-button > span,
@@ -5453,6 +5471,28 @@ body {
 
 .random-flashcard-empty p {
   margin-top: 7px;
+}
+
+.random-continue-button {
+  background: transparent;
+  border: 0;
+  color: #1d1d1b;
+  cursor: pointer;
+  float: right;
+  font-family: var(--ui-font);
+  font-size: 9px;
+  font-weight: 750;
+  margin-top: 10px;
+  padding: 3px 1px;
+  position: relative;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  z-index: 2;
+}
+
+.random-continue-button:hover {
+  color: var(--accent-deep);
 }
 
 @media (max-width: 980px) {

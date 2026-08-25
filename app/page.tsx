@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getApp, getApps, initializeApp } from "firebase/app";
 import {
+  browserLocalPersistence,
   GoogleAuthProvider,
   getAuth,
   isSignInWithEmailLink,
   onAuthStateChanged,
   sendSignInLinkToEmail,
+  setPersistence,
   signInWithEmailLink,
   signInWithPopup,
   signOut,
@@ -131,7 +133,6 @@ Organize and deduplicate the concepts, correct obvious mistakes, and write conci
 
 My rough list:
 [PASTE IT HERE]`;
-const AUTH_INTRO_KEY = "lume-auth-intro-seen-v1";
 const AUTH_EMAIL_KEY = "lume-auth-email-v1";
 const BACH_AUDIO =
   "https://commons.wikimedia.org/wiki/Special:Redirect/file/Bach%2C%20Goldberg%20Variations%2C%20Aria%20%28Musopen%20version%29.ogg";
@@ -697,7 +698,9 @@ export default function Home() {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [studyCardEditId, setStudyCardEditId] = useState<string>();
   const [accountOpen, setAccountOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(true);
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authResolved, setAuthResolved] = useState(!firebaseAuth);
   const [authMessage, setAuthMessage] = useState("");
   const [cloudReady, setCloudReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -765,30 +768,48 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    if (!localStorage.getItem(AUTH_INTRO_KEY)) {
-      queueMicrotask(() => setAccountOpen(true));
+    if (!firebaseAuth) {
+      setAuthResolved(true);
+      return;
     }
-    if (!firebaseAuth) return;
 
-    if (isSignInWithEmailLink(firebaseAuth, window.location.href)) {
-      const email = localStorage.getItem(AUTH_EMAIL_KEY);
-      if (email) {
-        void signInWithEmailLink(firebaseAuth, email, window.location.href)
-          .then(() => {
+    let cancelled = false;
+    let unsubscribe: () => void = () => undefined;
+
+    const restoreSession = async () => {
+      try {
+        await setPersistence(firebaseAuth, browserLocalPersistence);
+      } catch {
+        // Firebase will fall back to the persistence available in the browser.
+      }
+
+      if (isSignInWithEmailLink(firebaseAuth, window.location.href)) {
+        const email = localStorage.getItem(AUTH_EMAIL_KEY);
+        if (email) {
+          try {
+            await signInWithEmailLink(firebaseAuth, email, window.location.href);
             localStorage.removeItem(AUTH_EMAIL_KEY);
             window.history.replaceState({}, document.title, window.location.pathname);
-          })
-          .catch(() =>
-            setAuthMessage("Il link non è più valido. Richiedine uno nuovo."),
-          );
+          } catch {
+            setAuthMessage("Il link non è più valido. Richiedine uno nuovo.");
+          }
+        }
       }
-    }
 
-    return onAuthStateChanged(firebaseAuth, (nextUser) => {
-      setUser(nextUser);
-      if (nextUser) setAccountOpen(false);
-      if (!nextUser) setCloudReady(false);
-    });
+      if (cancelled) return;
+      unsubscribe = onAuthStateChanged(firebaseAuth, (nextUser) => {
+        setUser(nextUser);
+        setAuthResolved(true);
+        if (nextUser) setAccountOpen(false);
+        if (!nextUser) setCloudReady(false);
+      });
+    };
+
+    void restoreSession();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [hydrated]);
 
   const stopSound = useCallback(() => {
@@ -1581,6 +1602,23 @@ export default function Home() {
         />
       </div>
 
+      {welcomeOpen && (
+        <WelcomeModal
+          userEmail={user?.email ?? undefined}
+          authResolved={authResolved}
+          onOpenAccount={() => {
+            setWelcomeOpen(false);
+            setAuthMessage("");
+            setAccountOpen(true);
+          }}
+          onOpenWorkspace={() => {
+            navigate({ name: "home" });
+            setWelcomeOpen(false);
+          }}
+          onClose={() => setWelcomeOpen(false)}
+        />
+      )}
+
       {deckModalOpen && (
         <DeckModal
           deck={decks.find((deck) => deck.id === editingDeckId)}
@@ -1663,6 +1701,7 @@ export default function Home() {
               return;
             }
             try {
+              await setPersistence(firebaseAuth, browserLocalPersistence);
               await sendSignInLinkToEmail(firebaseAuth, email, {
                 url: window.location.href,
                 handleCodeInApp: true,
@@ -1685,6 +1724,7 @@ export default function Home() {
               return;
             }
             try {
+              await setPersistence(firebaseAuth, browserLocalPersistence);
               await signInWithPopup(firebaseAuth, new GoogleAuthProvider());
             } catch (error) {
               setAuthMessage(
@@ -1698,7 +1738,6 @@ export default function Home() {
             setAccountOpen(false);
           }}
           onContinueLocal={() => {
-            localStorage.setItem(AUTH_INTRO_KEY, "1");
             setAuthMessage("");
             setAccountOpen(false);
           }}
@@ -1740,6 +1779,101 @@ function RichText({ value, className = "" }: { value: string; className?: string
       className={className}
       dangerouslySetInnerHTML={{ __html: sanitizeRichText(value) }}
     />
+  );
+}
+
+function WelcomeModal({
+  userEmail,
+  authResolved,
+  onOpenAccount,
+  onOpenWorkspace,
+  onClose,
+}: {
+  userEmail?: string;
+  authResolved: boolean;
+  onOpenAccount: () => void;
+  onOpenWorkspace: () => void;
+  onClose: () => void;
+}) {
+  useEscape(onClose);
+
+  return (
+    <div
+      className="modal-backdrop welcome-backdrop"
+      role="presentation"
+      onMouseDown={onClose}
+    >
+      <section
+        className="welcome-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="welcome-modal-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button
+          className="modal-close welcome-modal-close"
+          type="button"
+          onClick={onClose}
+          aria-label="Chiudi"
+        >
+          ×
+        </button>
+
+        <div className="welcome-modal-copy">
+          <span className="eyebrow">Lume / flashcards</span>
+          <h2 id="welcome-modal-title">
+            <span>Flashcards.</span>
+            <span>Unlimited learning.</span>
+            <em>Free.</em>
+          </h2>
+          <p>
+            Organizza i set nelle tue cartelle, scrivi le domande e concentra il
+            ripasso sulle carte che conosci meno.
+          </p>
+
+          <div className="welcome-entry-actions">
+            <button
+              className="welcome-entry-button account-entry-button"
+              type="button"
+              onClick={onOpenAccount}
+            >
+              <span>{userEmail ? "Account collegato" : "Salva il tuo studio"}</span>
+              <strong>
+                {!authResolved
+                  ? "Controllo accesso…"
+                  : userEmail ?? "Fai il login"}
+              </strong>
+              <small>
+                {userEmail
+                  ? "Apri e gestisci il tuo profilo"
+                  : "Fai il login per salvare i tuoi set"}
+              </small>
+            </button>
+            <button
+              className="welcome-entry-button workspace-entry-button"
+              type="button"
+              onClick={onOpenWorkspace}
+            >
+              <span>Il mio spazio</span>
+              <strong>Le tue flashcards</strong>
+              <small>Apri cartelle e set <b aria-hidden="true">→</b></small>
+            </button>
+          </div>
+        </div>
+
+        <div className="editorial-board welcome-board" aria-hidden="true">
+          <div className="board-bar">
+            <span>STUDY FILE / 001</span><i /><i /><i />
+          </div>
+          <div className="board-grid">
+            <div className="board-index"><span>01</span><strong>QUESTION</strong></div>
+            <div className="board-question">Che cosa vuoi<br />ricordare oggi?</div>
+            <div className="board-note">Ripassa ciò che non sai.<br />Il resto può aspettare.</div>
+            <div className="board-tab">REVIEW</div>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -2073,38 +2207,6 @@ function Dashboard({
 
   return (
     <div className="dashboard">
-      <section className="welcome-section">
-        <div>
-          <span className="eyebrow">Lume / flashcards</span>
-          <h1>
-            <span>Flashcards.</span>
-            <em>Unlimited learning.</em>
-            <em className="free-line">Free.</em>
-          </h1>
-          <p>
-            Organizza i set nelle tue cartelle, scrivi le domande e concentra il
-            ripasso sulle carte che conosci meno.
-          </p>
-          <div className="welcome-actions">
-            <button className="primary-button" type="button" onClick={onCreate}>
-              <span aria-hidden="true">＋</span> Nuovo set
-            </button>
-            <button className="secondary-button" type="button" onClick={onViewAll}>
-              Apri le cartelle <span aria-hidden="true">↗</span>
-            </button>
-          </div>
-        </div>
-        <div className="editorial-board" aria-hidden="true">
-          <div className="board-bar"><span>STUDY FILE / 001</span><i /><i /><i /></div>
-          <div className="board-grid">
-            <div className="board-index"><span>01</span><strong>QUESTION</strong></div>
-            <div className="board-question">Che cosa vuoi<br />ricordare oggi?</div>
-            <div className="board-note">Ripassa ciò che non sai.<br />Il resto può aspettare.</div>
-            <div className="board-tab">REVIEW</div>
-          </div>
-        </div>
-      </section>
-
       <section className="dashboard-grid">
         <div className="continue-card">
           <div className="section-heading compact">
@@ -2148,14 +2250,7 @@ function Dashboard({
           )}
         </div>
 
-        <div className="calm-card">
-          <span className="calm-symbol" aria-hidden="true">↺</span>
-          <div>
-            <span className="eyebrow">Metodo</span>
-            <h3>Recupero attivo,<br /> senza distrazioni.</h3>
-            <p>Gira la carta. Rispondi. Ripeti solo ciò che serve.</p>
-          </div>
-        </div>
+        <RandomFlashcard decks={decks} />
       </section>
 
       <section className="overview-section">
@@ -2216,6 +2311,78 @@ function Dashboard({
         </div>
       </section>
     </div>
+  );
+}
+
+function RandomFlashcard({ decks }: { decks: Deck[] }) {
+  const cards = useMemo(
+    () =>
+      decks.flatMap((deck) =>
+        deck.cards.map((card) => ({
+          key: `${deck.id}:${card.id}`,
+          card,
+          deckTitle: deck.title,
+          font: deck.font,
+        })),
+      ),
+    [decks],
+  );
+  const [selectedKey, setSelectedKey] = useState("");
+  const [flipped, setFlipped] = useState(false);
+
+  useEffect(() => {
+    if (!cards.length) {
+      if (selectedKey) setSelectedKey("");
+      return;
+    }
+    if (!cards.some((item) => item.key === selectedKey)) {
+      const next = cards[Math.floor(Math.random() * cards.length)];
+      setSelectedKey(next.key);
+      setFlipped(false);
+    }
+  }, [cards, selectedKey]);
+
+  const selected = cards.find((item) => item.key === selectedKey) ?? cards[0];
+  const pickAnother = () => {
+    if (!cards.length) return;
+    const currentIndex = cards.findIndex((item) => item.key === selected?.key);
+    let nextIndex = Math.floor(Math.random() * cards.length);
+    if (cards.length > 1 && nextIndex === currentIndex) {
+      nextIndex = (nextIndex + 1) % cards.length;
+    }
+    setSelectedKey(cards[nextIndex].key);
+    setFlipped(false);
+  };
+
+  return (
+    <article className="calm-card random-flashcard-panel">
+      <div className="random-flashcard-toolbar">
+        <span className="eyebrow">Flashcard a caso</span>
+        <button type="button" onClick={pickAnother} disabled={!cards.length}>
+          Un’altra <span aria-hidden="true">↻</span>
+        </button>
+      </div>
+
+      {selected ? (
+        <button
+          className={flipped ? "random-flashcard-face is-flipped" : "random-flashcard-face"}
+          type="button"
+          onClick={() => setFlipped((value) => !value)}
+          aria-pressed={flipped}
+          aria-label={flipped ? "Mostra il fronte della flashcard" : "Mostra il significato"}
+          style={{ fontFamily: fontFamily(selected.font) }}
+        >
+          <small>{flipped ? "Significato" : selected.deckTitle}</small>
+          <RichText value={flipped ? selected.card.back : selected.card.front} />
+          <em>{flipped ? "Torna alla domanda" : "Gira la carta"}</em>
+        </button>
+      ) : (
+        <div className="random-flashcard-empty">
+          <strong>Qui apparirà una carta a sorpresa.</strong>
+          <p>Crea la tua prima flashcard per iniziare.</p>
+        </div>
+      )}
+    </article>
   );
 }
 

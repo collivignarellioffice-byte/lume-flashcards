@@ -32,9 +32,12 @@ test("renders the Lume application shell", async () => {
   assert.match(html, /Lume/);
   assert.match(html, /Unlimited learning/);
   assert.match(html, /Nuovo set/);
-  assert.match(html, /Apri le cartelle/);
+  assert.match(html, /Le tue flashcards/);
+  assert.match(html, /Fai il login per salvare i tuoi set/);
+  assert.match(html, /Flashcard a caso/);
   assert.match(html, /Esplora/);
   assert.match(html, /Flashcard pubbliche/);
   assert.match(html, /Accedi/);
+  assert.doesNotMatch(html, /Recupero attivo/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });

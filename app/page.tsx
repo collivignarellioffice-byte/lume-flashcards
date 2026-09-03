@@ -328,11 +328,15 @@ function cloudLibrarySnapshot(folders: Folder[], decks: Deck[], studyDays: strin
   };
 }
 
-function readStoredLibrary(key: string): CloudLibrary | null {
+type StoredLibraryRecord = {
+  library: CloudLibrary;
+  dirty: boolean;
+  savedAt: number;
+};
+
+function normalizeStoredLibrary(value: unknown): CloudLibrary | null {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<CloudLibrary>;
+    const parsed = value as Partial<CloudLibrary>;
     if (!Array.isArray(parsed.folders) || !Array.isArray(parsed.decks)) return null;
     const decks = parsed.decks.map((deck) => toCloudDeck(fromCloudDeck(deck)));
     const restoredDays = Array.isArray(parsed.studyDays) ? parsed.studyDays.filter((day): day is string => typeof day === "string") : [];
@@ -345,6 +349,32 @@ function readStoredLibrary(key: string): CloudLibrary | null {
   } catch {
     return null;
   }
+}
+
+function readStoredLibraryRecord(key: string): StoredLibraryRecord | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredLibraryRecord & CloudLibrary>;
+    const wrapped = parsed.library && typeof parsed.library === "object";
+    const library = normalizeStoredLibrary(wrapped ? parsed.library : parsed);
+    if (!library) return null;
+    return {
+      library,
+      dirty: wrapped ? parsed.dirty === true : false,
+      savedAt: wrapped && typeof parsed.savedAt === "number" ? parsed.savedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readStoredLibrary(key: string) {
+  return readStoredLibraryRecord(key)?.library ?? null;
+}
+
+function writeStoredLibrary(key: string, library: CloudLibrary, dirty: boolean) {
+  localStorage.setItem(key, JSON.stringify({ library, dirty, savedAt: Date.now() } satisfies StoredLibraryRecord));
 }
 
 function isLegacyDemoLibrary(library: CloudLibrary) {
@@ -502,6 +532,7 @@ export default function LumeApp() {
   const cloudBaselineRef = useRef<CloudLibrary | null>(null);
   const publicBaselineRef = useRef<CloudDeck[]>([]);
   const syncChainRef = useRef<Promise<void>>(Promise.resolve());
+  const localSnapshotRef = useRef<string | null>(null);
   const applyLibrary = useCallback((library: CloudLibrary) => {
     setFolders(library.folders.map((folder) => ({ ...folder })));
     setDecks(library.decks.map(fromCloudDeck));
@@ -517,14 +548,14 @@ export default function LumeApp() {
       const stored = guestLibrary ?? legacyLibrary;
       if (stored) {
         applyLibrary(stored);
-        if (legacyLibrary) localStorage.setItem(guestKey, JSON.stringify(legacyLibrary));
+        if (legacyLibrary) writeStoredLibrary(guestKey, legacyLibrary, false);
       } else {
         const migrated = migrateOldData();
         if (migrated) {
           setFolders(migrated.folders);
           setDecks(migrated.decks.map(normalizeDeck));
           setStudyDays(migrated.decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
-          localStorage.setItem(guestKey, JSON.stringify(cloudLibrarySnapshot(migrated.folders, migrated.decks.map(normalizeDeck), [], 25)));
+          writeStoredLibrary(guestKey, cloudLibrarySnapshot(migrated.folders, migrated.decks.map(normalizeDeck), [], 25), false);
         }
       }
       const storedTheme = localStorage.getItem(THEME_KEY);
@@ -541,10 +572,15 @@ export default function LumeApp() {
 
   useEffect(() => {
     if (!hydrated || (account && !cloudReady)) return;
-    const id = window.setTimeout(() => {
-      localStorage.setItem(libraryStoreKey(account?.uid ?? null), JSON.stringify(cloudLibrarySnapshot(folders, decks, studyDays, focusMinutes)));
-    }, 250);
-    return () => window.clearTimeout(id);
+    const snapshot = cloudLibrarySnapshot(folders, decks, studyDays, focusMinutes);
+    if (!account) {
+      writeStoredLibrary(libraryStoreKey(null), snapshot, false);
+      return;
+    }
+    const serialized = JSON.stringify(snapshot);
+    if (serialized === localSnapshotRef.current) return;
+    localSnapshotRef.current = serialized;
+    writeStoredLibrary(libraryStoreKey(account.uid), snapshot, true);
   }, [folders, decks, studyDays, focusMinutes, hydrated, account, cloudReady]);
 
   const refreshPublicDecks = useCallback(async (uid?: string) => {
@@ -576,6 +612,7 @@ export default function LumeApp() {
       if (!active) return;
       setAccount(nextAccount);
       setCloudReady(false);
+      localSnapshotRef.current = null;
       setView({ name: "home" });
       setStudy(null);
       setFolderCreator(null);
@@ -594,7 +631,9 @@ export default function LumeApp() {
             return;
           }
           setCloudStatus("loading");
-          applyLibrary(readStoredLibrary(libraryStoreKey(nextAccount.uid)) ?? emptyLibrary());
+          const accountStoreKey = libraryStoreKey(nextAccount.uid);
+          const cached = readStoredLibraryRecord(accountStoreKey);
+          applyLibrary(cached?.library ?? emptyLibrary());
           const [stored, existingPublic] = await Promise.all([
             loadPrivateLibrary(nextAccount.uid),
             loadPublicDecks(nextAccount.uid),
@@ -602,12 +641,18 @@ export default function LumeApp() {
           if (!active) return;
           let selectedLibrary: CloudLibrary;
           const replaceLegacyDemo = stored.exists && isLegacyDemoLibrary(stored.library);
-          if (stored.exists && !replaceLegacyDemo) {
-            selectedLibrary = stored.library;
-            applyLibrary(stored.library);
+          const recoverLocalChanges = cached?.dirty === true;
+          if (recoverLocalChanges) {
+            selectedLibrary = cached.library;
+            applyLibrary(selectedLibrary);
+            await syncPrivateLibrary(nextAccount, stored.exists ? stored.library : null, selectedLibrary);
+          } else if (stored.exists && !replaceLegacyDemo) {
+            selectedLibrary = normalizeStoredLibrary(stored.library) ?? stored.library;
+            applyLibrary(selectedLibrary);
             await new Promise((resolve) => window.setTimeout(resolve, 0));
           } else {
-            selectedLibrary = firstAccessLibrary();
+            const firstLibrary = firstAccessLibrary();
+            selectedLibrary = normalizeStoredLibrary(firstLibrary) ?? firstLibrary;
             applyLibrary(selectedLibrary);
             await syncPrivateLibrary(nextAccount, stored.exists ? stored.library : null, selectedLibrary);
           }
@@ -618,9 +663,15 @@ export default function LumeApp() {
           await syncPublicLibrary(nextAccount, previousPublic, nextPublic);
           cloudBaselineRef.current = selectedLibrary;
           publicBaselineRef.current = nextPublic;
+          localSnapshotRef.current = JSON.stringify(selectedLibrary);
+          writeStoredLibrary(accountStoreKey, selectedLibrary, false);
           setCloudReady(true);
           setCloudStatus("synced");
-          setAccountNotice(stored.exists && !replaceLegacyDemo ? "Account collegato. I tuoi dati sono sincronizzati." : "Il tuo spazio personale è pronto con un set di esempio.");
+          setAccountNotice(recoverLocalChanges
+            ? "Le modifiche rimaste sul dispositivo sono state recuperate e salvate online."
+            : stored.exists && !replaceLegacyDemo
+              ? "Account collegato. I tuoi dati sono sincronizzati."
+              : "Il tuo spazio personale è pronto con un set di esempio.");
           await refreshPublicDecks(nextAccount.uid);
         } catch (error) {
           if (!active) return;
@@ -639,6 +690,7 @@ export default function LumeApp() {
     if (!hydrated || !account || !cloudReady) return;
     const timeout = window.setTimeout(() => {
       const snapshot = cloudLibrarySnapshot(folders, decks, studyDays, focusMinutes);
+      const serialized = JSON.stringify(snapshot);
       syncChainRef.current = syncChainRef.current.then(async () => {
         setCloudStatus("syncing");
         const nextPublic = publicDecksFromLibrary(snapshot);
@@ -646,6 +698,7 @@ export default function LumeApp() {
         await syncPublicLibrary(account, publicBaselineRef.current, nextPublic);
         cloudBaselineRef.current = snapshot;
         publicBaselineRef.current = nextPublic;
+        if (localSnapshotRef.current === serialized) writeStoredLibrary(libraryStoreKey(account.uid), snapshot, false);
         setCloudStatus("synced");
         await refreshPublicDecks(account.uid);
       }).catch((error) => {

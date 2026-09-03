@@ -59,6 +59,8 @@ test("keeps each account library separate and seeds one private example", async 
 
   assert.match(page, /lume-library-v3/);
   assert.match(page, /libraryStoreKey\(nextAccount\.uid\)/);
+  assert.match(page, /writeStoredLibrary\(libraryStoreKey\(account\.uid\), snapshot, true\)/);
+  assert.match(page, /recoverLocalChanges/);
   assert.match(page, /Esempio · Inizia da qui/);
   assert.match(page, /title: "Scopri Lume"/);
   assert.match(page, /visibility: "private"/);

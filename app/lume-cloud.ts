@@ -237,7 +237,9 @@ export async function loadPrivateLibrary(uid: string): Promise<{ exists: boolean
     getDocs(collection(db, "users", uid, "folders")),
     getDocs(collection(db, "users", uid, "decks")),
   ]);
-  if (!profile.exists() && folderDocs.empty && deckDocs.empty) return { exists: false, library: emptyLibrary() };
+  const data = profile.data() ?? {};
+  const libraryInitialized = data.libraryInitialized === true;
+  if (!libraryInitialized && folderDocs.empty && deckDocs.empty) return { exists: false, library: emptyLibrary() };
 
   const decks = await Promise.all(deckDocs.docs.map(async (deckDocument) => {
     const cardDocs = await getDocs(collection(db, "users", uid, "decks", deckDocument.id, "cards"));
@@ -249,7 +251,6 @@ export async function loadPrivateLibrary(uid: string): Promise<{ exists: boolean
         .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)),
     } as CloudDeck;
   }));
-  const data = profile.data() ?? {};
   return {
     exists: true,
     library: {
@@ -302,6 +303,7 @@ export async function syncPrivateLibrary(account: CloudAccount, previous: CloudL
     email: account.email,
     displayName: account.displayName,
     photoURL: account.photoURL,
+    libraryInitialized: true,
     studyDays: next.studyDays,
     focusMinutes: next.focusMinutes,
     updatedAt: serverTimestamp(),

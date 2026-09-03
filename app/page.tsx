@@ -114,8 +114,13 @@ type StudyState = {
   cardColor: string;
 };
 
-const STORE_KEY = "lume-clean-v2";
+const LEGACY_STORE_KEY = "lume-clean-v2";
+const STORE_PREFIX = "lume-library-v3";
 const THEME_KEY = "lume-clean-theme";
+
+function libraryStoreKey(uid: string | null) {
+  return `${STORE_PREFIX}:${uid ?? "guest"}`;
+}
 
 const colors = [
   "#d7b56d",
@@ -155,138 +160,63 @@ Reorder and deduplicate the concepts, correct obvious mistakes, and keep definit
 My rough notes:
 [PASTE HERE]`;
 
-const seedFolders: Folder[] = [
-  {
-    id: "f-uni",
-    parentId: null,
-    title: "Università",
-    color: "#d7b56d",
-    visibility: "private",
-    createdAt: 1,
-  },
-  {
-    id: "f-psy",
-    parentId: "f-uni",
-    title: "Psicologia",
-    color: "#91aaa4",
-    visibility: "private",
-    createdAt: 2,
-  },
-  {
-    id: "f-exams",
-    parentId: "f-uni",
-    title: "Esami di gennaio",
-    color: "#cda6a2",
-    visibility: "private",
-    createdAt: 3,
-  },
-  {
-    id: "f-language",
-    parentId: null,
-    title: "Lingue",
-    color: "#8099b5",
-    visibility: "private",
-    createdAt: 4,
-  },
-];
+function emptyLibrary(): CloudLibrary {
+  return { folders: [], decks: [], studyDays: [], focusMinutes: 25 };
+}
 
-const seedDecks: Deck[] = [
-  {
-    id: "d-cognition",
-    folderId: "f-psy",
-    title: "Psicologia cognitiva",
-    description: "Memoria, attenzione e apprendimento",
-    color: "#91aaa4",
-    pattern: "waves",
-    visibility: "private",
-    keywordHelp: true,
-    order: "sequential",
-    direction: "front-first",
-    createdAt: 1,
-    lastStudied: Date.now() - 1000 * 60 * 90,
-    cards: [
-      {
-        id: "c-working",
-        front: "Che cos’è la memoria di lavoro?",
-        back: "Un sistema a <strong>capacità limitata</strong> che mantiene e manipola temporaneamente le informazioni necessarie a un compito.",
-        known: 4,
-        missed: 1,
-      },
-      {
-        id: "c-serial",
-        front: "Effetto di posizione seriale",
-        back: "Tendenza a ricordare meglio gli elementi all’<strong>inizio</strong> e alla <strong>fine</strong> di una lista.",
-        known: 2,
-        missed: 3,
-      },
-      {
-        id: "c-cues",
-        front: "Che cosa sono gli indizi di recupero?",
-        back: "Informazioni interne o ambientali che facilitano l’<strong>accesso</strong> a un ricordo.",
-        known: 3,
-        missed: 1,
-      },
-    ],
-  },
-  {
-    id: "d-methods",
-    folderId: "f-psy",
-    title: "Metodologia della ricerca",
-    description: "Disegni, variabili e validità",
-    color: "#91aaa4",
-    pattern: "grid",
-    visibility: "private",
-    keywordHelp: false,
-    order: "random",
-    direction: "front-first",
-    createdAt: 2,
-    cards: [
-      {
-        id: "c-variable",
-        front: "Variabile indipendente",
-        back: "La variabile manipolata o selezionata dal ricercatore per osservarne gli effetti.",
-        known: 1,
-        missed: 2,
-      },
-      {
-        id: "c-validity",
-        front: "Validità interna",
-        back: "Il grado in cui l’effetto osservato può essere attribuito alla variabile indipendente.",
-        known: 2,
-        missed: 0,
-      },
-    ],
-  },
-  {
-    id: "d-english",
-    folderId: "f-language",
-    title: "English · C1",
-    description: "Vocabulary for writing and conversation",
-    color: "#8099b5",
-    pattern: "lines",
-    visibility: "public",
-    keywordHelp: false,
-    order: "random",
-    direction: "back-first",
-    createdAt: 3,
-    cards: [
-      {
-        id: "c-nuance",
-        front: "Nuance",
-        back: "A subtle difference in meaning, expression, or sound.",
-        known: 1,
-        missed: 1,
-      },
-      {
-        id: "c-compelling",
-        front: "Compelling",
-        back: "Evoking interest, attention, or admiration in a powerfully irresistible way.",
-        known: 0,
-        missed: 1,
-      },
-    ],
-  },
-];
+function firstAccessLibrary(): CloudLibrary {
+  const createdAt = Date.now();
+  return {
+    folders: [{
+      id: "lume-example-folder",
+      parentId: null,
+      title: "Esempio · Inizia da qui",
+      color: "#91aaa4",
+      visibility: "private",
+      createdAt,
+    }],
+    decks: [{
+      id: "lume-example-deck",
+      folderId: "lume-example-folder",
+      title: "Scopri Lume",
+      description: "Un piccolo set per provare lo studio",
+      color: "#91aaa4",
+      pattern: "waves",
+      visibility: "private",
+      keywordHelp: true,
+      order: "sequential",
+      direction: "front-first",
+      cardColorMode: "single",
+      cardColor: "#91aaa4",
+      createdAt: createdAt + 1,
+      cards: [
+        {
+          id: "lume-example-card-flip",
+          front: "Come giro una flashcard?",
+          back: "Premi la <strong>barra spaziatrice</strong> oppure tocca la carta.",
+          known: 0,
+          missed: 0,
+        },
+        {
+          id: "lume-example-card-answer",
+          front: "Come indico se conosco la risposta?",
+          back: "Premi <strong>1</strong> se la sai e <strong>2</strong> se vuoi rivederla.",
+          known: 0,
+          missed: 0,
+        },
+        {
+          id: "lume-example-card-keywords",
+          front: "Che cos’è Keyword Help?",
+          back: "Tenendo premuta la barra spaziatrice restano visibili soltanto le <strong>parole chiave</strong> evidenziate in neretto.",
+          known: 0,
+          missed: 0,
+        },
+      ],
+    }],
+    studyDays: [],
+    focusMinutes: 25,
+  };
+}
 
 function makeId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -398,6 +328,43 @@ function cloudLibrarySnapshot(folders: Folder[], decks: Deck[], studyDays: strin
   };
 }
 
+function readStoredLibrary(key: string): CloudLibrary | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CloudLibrary>;
+    if (!Array.isArray(parsed.folders) || !Array.isArray(parsed.decks)) return null;
+    const decks = parsed.decks.map((deck) => toCloudDeck(fromCloudDeck(deck)));
+    const restoredDays = Array.isArray(parsed.studyDays) ? parsed.studyDays.filter((day): day is string => typeof day === "string") : [];
+    return {
+      folders: parsed.folders,
+      decks,
+      studyDays: restoredDays.length ? restoredDays : decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []),
+      focusMinutes: typeof parsed.focusMinutes === "number" ? Math.min(240, Math.max(1, parsed.focusMinutes)) : 25,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isLegacyDemoLibrary(library: CloudLibrary) {
+  const folderSignature = new Map([
+    ["f-uni", "Università"],
+    ["f-psy", "Psicologia"],
+    ["f-exams", "Esami di gennaio"],
+    ["f-language", "Lingue"],
+  ]);
+  const deckSignature = new Map([
+    ["d-cognition", "Psicologia cognitiva"],
+    ["d-methods", "Metodologia della ricerca"],
+    ["d-english", "English · C1"],
+  ]);
+  return library.folders.length === folderSignature.size
+    && library.decks.length === deckSignature.size
+    && library.folders.every((folder) => folderSignature.get(folder.id) === folder.title)
+    && library.decks.every((deck) => deckSignature.get(deck.id) === deck.title);
+}
+
 function publicDecksFromLibrary(library: CloudLibrary) {
   const folderMap = new Map(library.folders.map((folder) => [folder.id, folder]));
   const folderIsPublic = (folderId: string | null) => {
@@ -496,13 +463,13 @@ function migrateOldData(): { folders: Folder[]; decks: Deck[] } | null {
 }
 
 export default function LumeApp() {
-  const [folders, setFolders] = useState<Folder[]>(seedFolders);
-  const [decks, setDecks] = useState<Deck[]>(seedDecks);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [decks, setDecks] = useState<Deck[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [sidebarWidth, setSidebarWidth] = useState(226);
   const [view, setView] = useState<View>({ name: "home" });
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(["f-uni", "f-psy"]));
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [createMenu, setCreateMenu] = useState(false);
   const [folderCreator, setFolderCreator] = useState<{ parentId: string | null; editId?: string } | null>(null);
   const [deckCreator, setDeckCreator] = useState<{ folderId: string | null; editId?: string } | null>(null);
@@ -520,7 +487,7 @@ export default function LumeApp() {
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
   const [focusSetup, setFocusSetup] = useState(false);
   const [focusMinutes, setFocusMinutes] = useState(25);
-  const [studyDays, setStudyDays] = useState<string[]>(() => seedDecks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
+  const [studyDays, setStudyDays] = useState<string[]>([]);
   const [focus, setFocus] = useState<{ startedAt: number; duration: number; pausedAt?: number; finishedAt?: number } | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const [timerVisible, setTimerVisible] = useState(true);
@@ -535,30 +502,29 @@ export default function LumeApp() {
   const cloudBaselineRef = useRef<CloudLibrary | null>(null);
   const publicBaselineRef = useRef<CloudDeck[]>([]);
   const syncChainRef = useRef<Promise<void>>(Promise.resolve());
-  const libraryRef = useRef<CloudLibrary>(cloudLibrarySnapshot(seedFolders, seedDecks, [], 25));
-
-  useEffect(() => {
-    libraryRef.current = cloudLibrarySnapshot(folders, decks, studyDays, focusMinutes);
-  }, [folders, decks, studyDays, focusMinutes]);
+  const applyLibrary = useCallback((library: CloudLibrary) => {
+    setFolders(library.folders.map((folder) => ({ ...folder })));
+    setDecks(library.decks.map(fromCloudDeck));
+    setStudyDays(library.studyDays);
+    setFocusMinutes(Math.min(240, Math.max(1, library.focusMinutes)));
+  }, []);
 
   useEffect(() => {
     try {
-      const stored = localStorage.getItem(STORE_KEY);
+      const guestKey = libraryStoreKey(null);
+      const guestLibrary = readStoredLibrary(guestKey);
+      const legacyLibrary = guestLibrary ? null : readStoredLibrary(LEGACY_STORE_KEY);
+      const stored = guestLibrary ?? legacyLibrary;
       if (stored) {
-        const parsed = JSON.parse(stored) as { folders?: Folder[]; decks?: Deck[]; studyDays?: string[]; focusMinutes?: number };
-        if (Array.isArray(parsed.folders) && Array.isArray(parsed.decks)) {
-          setFolders(parsed.folders);
-          setDecks(parsed.decks.map(normalizeDeck));
-          const restoredDays = Array.isArray(parsed.studyDays) ? parsed.studyDays.filter((day): day is string => typeof day === "string") : [];
-          setStudyDays(restoredDays.length ? restoredDays : parsed.decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
-          if (typeof parsed.focusMinutes === "number") setFocusMinutes(Math.min(240, Math.max(1, parsed.focusMinutes)));
-        }
+        applyLibrary(stored);
+        if (legacyLibrary) localStorage.setItem(guestKey, JSON.stringify(legacyLibrary));
       } else {
         const migrated = migrateOldData();
         if (migrated) {
           setFolders(migrated.folders);
           setDecks(migrated.decks.map(normalizeDeck));
           setStudyDays(migrated.decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
+          localStorage.setItem(guestKey, JSON.stringify(cloudLibrarySnapshot(migrated.folders, migrated.decks.map(normalizeDeck), [], 25)));
         }
       }
       const storedTheme = localStorage.getItem(THEME_KEY);
@@ -566,7 +532,7 @@ export default function LumeApp() {
     } finally {
       setHydrated(true);
     }
-  }, []);
+  }, [applyLibrary]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -574,12 +540,12 @@ export default function LumeApp() {
   }, [theme, hydrated]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || (account && !cloudReady)) return;
     const id = window.setTimeout(() => {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ folders, decks, studyDays, focusMinutes }));
+      localStorage.setItem(libraryStoreKey(account?.uid ?? null), JSON.stringify(cloudLibrarySnapshot(folders, decks, studyDays, focusMinutes)));
     }, 250);
     return () => window.clearTimeout(id);
-  }, [folders, decks, studyDays, focusMinutes, hydrated]);
+  }, [folders, decks, studyDays, focusMinutes, hydrated, account, cloudReady]);
 
   const refreshPublicDecks = useCallback(async (uid?: string) => {
     if (!cloudIsConfigured()) {
@@ -610,32 +576,40 @@ export default function LumeApp() {
       if (!active) return;
       setAccount(nextAccount);
       setCloudReady(false);
+      setView({ name: "home" });
+      setStudy(null);
+      setFolderCreator(null);
+      setDeckCreator(null);
+      setDeckTransfer(null);
+      setBatchMove(null);
+      setDeleteRequest(null);
       void (async () => {
         try {
           if (!nextAccount) {
             cloudBaselineRef.current = null;
             publicBaselineRef.current = [];
             setCloudStatus("signed-out");
+            applyLibrary(readStoredLibrary(libraryStoreKey(null)) ?? emptyLibrary());
             await refreshPublicDecks();
             return;
           }
           setCloudStatus("loading");
+          applyLibrary(readStoredLibrary(libraryStoreKey(nextAccount.uid)) ?? emptyLibrary());
           const [stored, existingPublic] = await Promise.all([
             loadPrivateLibrary(nextAccount.uid),
             loadPublicDecks(nextAccount.uid),
           ]);
           if (!active) return;
           let selectedLibrary: CloudLibrary;
-          if (stored.exists) {
+          const replaceLegacyDemo = stored.exists && isLegacyDemoLibrary(stored.library);
+          if (stored.exists && !replaceLegacyDemo) {
             selectedLibrary = stored.library;
-            setFolders(stored.library.folders.map((folder) => ({ ...folder })));
-            setDecks(stored.library.decks.map(fromCloudDeck));
-            setStudyDays(stored.library.studyDays);
-            setFocusMinutes(Math.min(240, Math.max(1, stored.library.focusMinutes)));
+            applyLibrary(stored.library);
             await new Promise((resolve) => window.setTimeout(resolve, 0));
           } else {
-            selectedLibrary = libraryRef.current;
-            await syncPrivateLibrary(nextAccount, null, selectedLibrary);
+            selectedLibrary = firstAccessLibrary();
+            applyLibrary(selectedLibrary);
+            await syncPrivateLibrary(nextAccount, stored.exists ? stored.library : null, selectedLibrary);
           }
           const nextPublic = publicDecksFromLibrary(selectedLibrary);
           const previousPublic = existingPublic
@@ -646,7 +620,7 @@ export default function LumeApp() {
           publicBaselineRef.current = nextPublic;
           setCloudReady(true);
           setCloudStatus("synced");
-          setAccountNotice(stored.exists ? "Account collegato. I tuoi dati sono sincronizzati." : "Account collegato. Le flashcards di questo dispositivo sono state salvate online.");
+          setAccountNotice(stored.exists && !replaceLegacyDemo ? "Account collegato. I tuoi dati sono sincronizzati." : "Il tuo spazio personale è pronto con un set di esempio.");
           await refreshPublicDecks(nextAccount.uid);
         } catch (error) {
           if (!active) return;
@@ -659,7 +633,7 @@ export default function LumeApp() {
       active = false;
       unsubscribe();
     };
-  }, [hydrated, refreshPublicDecks]);
+  }, [hydrated, refreshPublicDecks, applyLibrary]);
 
   useEffect(() => {
     if (!hydrated || !account || !cloudReady) return;

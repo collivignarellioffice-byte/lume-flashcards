@@ -1,4 +1,16 @@
 {
+  "auth": {
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Lume",
+        "supportEmail": "collivignarelli.office@gmail.com",
+        "authorizedRedirectUris": [
+          "https://lume-flashcards-mcv.firebaseapp.com/__/auth/handler"
+        ]
+      }
+    }
+  },
   "firestore": {
     "database": "(default)",
     "location": "eur3",

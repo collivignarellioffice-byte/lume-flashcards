@@ -1,29 +1,39 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getApp, getApps, initializeApp } from "firebase/app";
 import {
-  browserLocalPersistence,
-  GoogleAuthProvider,
-  getAuth,
-  isSignInWithEmailLink,
-  onAuthStateChanged,
-  sendSignInLinkToEmail,
-  setPersistence,
-  signInWithEmailLink,
-  signInWithPopup,
-  signOut,
-  type User as FirebaseUser,
-} from "firebase/auth";
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  getFirestore,
-  setDoc,
-} from "firebase/firestore";
+  cloudIsConfigured,
+  friendlyCloudError,
+  loadPrivateLibrary,
+  loadPublicDecks,
+  loginWithEmail,
+  loginWithGoogle,
+  logoutAccount,
+  observeAccount,
+  registerWithEmail,
+  resetAccountPassword,
+  savePublicStudyResult,
+  setPublicVote,
+  syncPrivateLibrary,
+  syncPublicLibrary,
+  type CloudAccount,
+  type CloudDeck,
+  type CloudLibrary,
+} from "./lume-cloud";
+
+type Visibility = "private" | "public";
+type Pattern = "plain" | "lines" | "grid" | "waves" | "dots" | "botanical";
+type Order = "sequential" | "random";
+type Direction = "front-first" | "back-first";
+type StudyFont = "current" | "comic" | "helvetica" | "serif" | "mono";
+type CardColorMode = "single" | "random";
+type PublicVote = -1 | 0 | 1 | 2;
 
 type Card = {
   id: string;
@@ -31,4465 +41,2027 @@ type Card = {
   back: string;
   known: number;
   missed: number;
-};
-
-type FontChoice =
-  | "lume"
-  | "mono"
-  | "helvetica"
-  | "caecilia"
-  | "baskerville"
-  | "bookerly"
-  | "futura"
-  | "palatino"
-  | "comic-sans-dm";
-
-type Deck = {
-  id: string;
-  folderId: string;
-  emoji: string;
-  title: string;
-  description: string;
-  color: string;
-  cardColor: string;
-  font?: FontChoice;
-  visibility: "private" | "public";
-  keywordHelp: boolean;
-  cards: Card[];
-  createdAt: number;
-  lastStudied?: number;
+  pinned?: boolean;
+  pinComment?: string;
 };
 
 type Folder = {
   id: string;
+  parentId: string | null;
   title: string;
   color: string;
-  emoji: string;
-  visibility: "private" | "public";
+  visibility: Visibility;
   createdAt: number;
 };
 
-type Settings = {
-  theme: "light" | "dark";
-  font: FontChoice;
-  volume: number;
-  focusMinutes: number;
-  breathingIntervalMinutes: number;
-  bestStreak: number;
-  typographyRevision: number;
+type Deck = {
+  id: string;
+  folderId: string | null;
+  title: string;
+  description: string;
+  color: string;
+  pattern: Pattern;
+  visibility: Visibility;
+  keywordHelp: boolean;
+  order: Order;
+  direction: Direction;
+  cardColorMode?: CardColorMode;
+  cardColor?: string;
+  cards: Card[];
+  createdAt: number;
+  lastStudied?: number;
+  votes?: number;
+  userVote?: PublicVote;
+  publicId?: string;
+  ownerId?: string;
+  ownerName?: string;
+  ratingsCount?: number;
+  community?: boolean;
 };
+
+type CloudStatus = "unavailable" | "checking" | "signed-out" | "loading" | "syncing" | "synced" | "error";
 
 type View =
   | { name: "home" }
-  | { name: "library" }
-  | { name: "community" }
-  | { name: "folder"; folderId: string }
-  | { name: "deck"; deckId: string }
-  | { name: "study" };
+  | { name: "folders" }
+  | { name: "explore" }
+  | { name: "folder"; id: string }
+  | { name: "deck"; id: string };
 
-type StudyTarget = {
-  kind: "deck" | "folder" | "public" | "all";
-  id: string;
+type DeleteRequest = {
+  kind: "folder" | "decks";
+  title: string;
+  folderIds: string[];
+  deckIds: string[];
+  subfolderCount: number;
+  deckCount: number;
+  returnFolderId?: string | null;
 };
 
-type StudyRequest = {
-  target: StudyTarget;
-  cardIds?: string[];
-  startCardId?: string;
-};
-
-type StudyOrder = "sequential" | "random";
-
-type StudySession = {
-  target: StudyTarget;
-  queue: string[];
-  originalQueue: string[];
-  order: StudyOrder;
+type StudyState = {
+  deckIds: string[];
+  cardIds: string[];
   index: number;
+  flipped: boolean;
   known: number;
-  wrong: string[];
+  missed: string[];
   streak: number;
   bestStreak: number;
-  points: number;
-  direction: "front-first" | "back-first";
-  flipped: boolean;
   complete: boolean;
+  direction: Direction;
+  order: Order;
+  font: StudyFont;
+  cardColor: string;
 };
 
-type PublicDeck = Deck & {
-  catalogId: string;
-  ownerId: string;
-  author: string;
-  sourceFolderId?: string;
-  sourceFolderTitle?: string;
-  sourceFolderPublic?: boolean;
-};
+const STORE_KEY = "lume-clean-v2";
+const THEME_KEY = "lume-clean-theme";
 
-type SoundMode = "off" | "rain" | "brown" | "bach";
+const colors = [
+  "#d7b56d",
+  "#cda6a2",
+  "#91aaa4",
+  "#a995aa",
+  "#afbd91",
+  "#cf8e72",
+  "#8099b5",
+  "#c6b596",
+];
 
-type LumeSession =
-  | { kind: "focus"; durationMs: number; startedAt: number }
-  | { kind: "breathing"; startedAt: number; automatic: boolean };
+const cardColors = [...colors, "#34383b"];
 
-type ImportPair = {
-  front: string;
-  back: string;
-};
+const patterns: Array<{ value: Pattern; label: string }> = [
+  { value: "plain", label: "Pulito" },
+  { value: "lines", label: "Righe" },
+  { value: "grid", label: "Griglia" },
+  { value: "waves", label: "Onde" },
+  { value: "dots", label: "Punti" },
+  { value: "botanical", label: "Botanico" },
+];
 
-const STORAGE_KEY = "lume-flashcards-v1";
-const FOLDERS_KEY = "lume-folders-v1";
-const SETTINGS_KEY = "lume-settings-v1";
-const DEFAULT_FOLDER_ID = "cartella-prova";
-const FLASHCARD_MARKDOWN_PROMPT = `Convert my rough list of study concepts into a downloadable UTF-8 Markdown file named flashcards.md. Inside the file, write exactly one flashcard per line in this format:
+const markdownPrompt = `Turn my rough study notes into a UTF-8 Markdown file named flashcards.md. Write exactly one flashcard per line using this format:
 term :: definition
 
-Organize and deduplicate the concepts, correct obvious mistakes, and write concise, clear definitions without changing the meaning. Do not add headings, bullets, numbering, tables, code fences, comments, or any text before or after the cards.
+Reorder and deduplicate the concepts, correct obvious mistakes, and keep every definition clear and concise. Do not add headings, bullets, numbering, tables, code fences, comments, or any text before or after the flashcards.
 
-My rough list:
-[PASTE IT HERE]`;
-const AUTH_EMAIL_KEY = "lume-auth-email-v1";
-const BACH_AUDIO =
-  "https://commons.wikimedia.org/wiki/Special:Redirect/file/Bach%2C%20Goldberg%20Variations%2C%20Aria%20%28Musopen%20version%29.ogg";
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY?.trim() ?? "",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN?.trim() ?? "",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID?.trim() ?? "",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET?.trim() ?? "",
-  messagingSenderId:
-    import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID?.trim() ?? "",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID?.trim() ?? "",
-};
-const firebaseConfigured = Boolean(
-  firebaseConfig.apiKey &&
-    firebaseConfig.authDomain &&
-    firebaseConfig.projectId &&
-    firebaseConfig.appId,
-);
-const firebaseApp = firebaseConfigured
-  ? getApps().length
-    ? getApp()
-    : initializeApp(firebaseConfig)
-  : null;
-const firebaseAuth = firebaseApp ? getAuth(firebaseApp) : null;
-const firestore = firebaseApp ? getFirestore(firebaseApp) : null;
+My rough notes:
+[PASTE HERE]`;
 
-const fontOptions: Array<{
-  value: FontChoice;
-  label: string;
-  family: string;
-}> = [
-  {
-    value: "lume",
-    label: "Lume Sans",
-    family: '"Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif',
-  },
-  {
-    value: "mono",
-    label: "Mono",
-    family: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-  },
-  {
-    value: "helvetica",
-    label: "Helvetica",
-    family: "Helvetica, Arial, ui-sans-serif, sans-serif",
-  },
-  {
-    value: "caecilia",
-    label: "Caecilia",
-    family: 'Caecilia, "PMN Caecilia", Rockwell, Georgia, serif',
-  },
-  {
-    value: "baskerville",
-    label: "Baskerville",
-    family: 'Baskerville, "Baskerville Old Face", Georgia, serif',
-  },
-  {
-    value: "bookerly",
-    label: "Bookerly",
-    family: 'Bookerly, Georgia, "Times New Roman", serif',
-  },
-  {
-    value: "futura",
-    label: "Futura",
-    family: 'Futura, "Century Gothic", "Avenir Next", Arial, sans-serif',
-  },
-  {
-    value: "palatino",
-    label: "Palatino",
-    family: 'Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif',
-  },
-  {
-    value: "comic-sans-dm",
-    label: "ComicSansDM",
-    family: 'ComicSansDM, "Comic Sans MS", "Comic Sans", cursive',
-  },
-];
+const keywordMarkdownPrompt = `Turn my rough study notes into a UTF-8 Markdown file named flashcards.md. Write exactly one flashcard per line as:
+term :: definition
 
-const supportedFonts = new Set<FontChoice>(
-  fontOptions.map((option) => option.value),
-);
+Reorder and deduplicate the concepts, correct obvious mistakes, and keep definitions accurate. In every definition, wrap only its most useful conceptual anchors in **double asterisks**: use 1 anchor for a short definition, 2 for a medium definition, and no more than 3 for a long one. Choose ideas that can trigger oral recall, not generic words. Do not add headings, bullets, numbering, tables, code fences, comments, or extra text.
 
-function normalizeFont(value: unknown): FontChoice {
-  return typeof value === "string" && supportedFonts.has(value as FontChoice)
-    ? (value as FontChoice)
-    : "helvetica";
-}
+My rough notes:
+[PASTE HERE]`;
 
-function fontFamily(font?: FontChoice) {
-  return (
-    fontOptions.find((option) => option.value === font)?.family ??
-    "var(--body-font)"
-  );
-}
-
-const palettes = [
-  { name: "Terracotta", color: "#bf664f", card: "#f5ddd4" },
-  { name: "Salvia", color: "#668171", card: "#dce8df" },
-  { name: "Prugna", color: "#775566", card: "#eadde3" },
-  { name: "Blu sera", color: "#526b84", card: "#dce5ed" },
-  { name: "Ocra", color: "#b4863e", card: "#f2e6c9" },
-];
-
-const demoFolders: Folder[] = [
+const seedFolders: Folder[] = [
   {
-    id: DEFAULT_FOLDER_ID,
-    title: "Cartella prova",
-    color: "#e8c47d",
-    emoji: "",
+    id: "f-uni",
+    parentId: null,
+    title: "Università",
+    color: "#d7b56d",
     visibility: "private",
     createdAt: 1,
   },
+  {
+    id: "f-psy",
+    parentId: "f-uni",
+    title: "Psicologia",
+    color: "#91aaa4",
+    visibility: "private",
+    createdAt: 2,
+  },
+  {
+    id: "f-exams",
+    parentId: "f-uni",
+    title: "Esami di gennaio",
+    color: "#cda6a2",
+    visibility: "private",
+    createdAt: 3,
+  },
+  {
+    id: "f-language",
+    parentId: null,
+    title: "Lingue",
+    color: "#8099b5",
+    visibility: "private",
+    createdAt: 4,
+  },
 ];
 
-const demoDecks: Deck[] = [
+const seedDecks: Deck[] = [
   {
-    id: "psicologia-cognitiva",
-    folderId: DEFAULT_FOLDER_ID,
-    emoji: "",
+    id: "d-cognition",
+    folderId: "f-psy",
     title: "Psicologia cognitiva",
     description: "Memoria, attenzione e apprendimento",
-    color: "#bf664f",
-    cardColor: "#f5ddd4",
+    color: "#91aaa4",
+    pattern: "waves",
     visibility: "private",
     keywordHelp: true,
+    order: "sequential",
+    direction: "front-first",
     createdAt: 1,
-    lastStudied: Date.now() - 1000 * 60 * 60 * 22,
+    lastStudied: Date.now() - 1000 * 60 * 90,
     cards: [
       {
-        id: "p1",
+        id: "c-working",
         front: "Che cos’è la memoria di lavoro?",
         back: "Un sistema a <strong>capacità limitata</strong> che mantiene e manipola temporaneamente le informazioni necessarie a un compito.",
-        known: 5,
+        known: 4,
         missed: 1,
       },
       {
-        id: "p2",
+        id: "c-serial",
         front: "Effetto di posizione seriale",
-        back: "Tendenza a ricordare meglio gli elementi all’inizio (<strong>primacy</strong>) e alla fine (<strong>recency</strong>) di una lista.",
+        back: "Tendenza a ricordare meglio gli elementi all’<strong>inizio</strong> e alla <strong>fine</strong> di una lista.",
         known: 2,
         missed: 3,
       },
       {
-        id: "p3",
-        front: "Che cos’è la pratica distribuita?",
-        back: "La distribuzione dello studio in <strong>sessioni separate nel tempo</strong>, più efficace della pratica concentrata.",
-        known: 4,
-        missed: 0,
+        id: "c-cues",
+        front: "Che cosa sono gli indizi di recupero?",
+        back: "Informazioni interne o ambientali che facilitano l’<strong>accesso</strong> a un ricordo.",
+        known: 3,
+        missed: 1,
       },
+    ],
+  },
+  {
+    id: "d-methods",
+    folderId: "f-psy",
+    title: "Metodologia della ricerca",
+    description: "Disegni, variabili e validità",
+    color: "#91aaa4",
+    pattern: "grid",
+    visibility: "private",
+    keywordHelp: false,
+    order: "random",
+    direction: "front-first",
+    createdAt: 2,
+    cards: [
       {
-        id: "p4",
-        front: "Interferenza retroattiva",
-        back: "Le <strong>informazioni apprese più di recente</strong> ostacolano il recupero di quelle apprese in precedenza.",
+        id: "c-variable",
+        front: "Variabile indipendente",
+        back: "La variabile manipolata o selezionata dal ricercatore per osservarne gli effetti.",
         known: 1,
         missed: 2,
       },
       {
-        id: "p5",
-        front: "Metacognizione",
-        back: "La <strong>consapevolezza</strong> e la <strong>regolazione</strong> dei propri processi cognitivi e di apprendimento.",
-        known: 3,
-        missed: 1,
-      },
-      {
-        id: "p6",
-        front: "Testing effect",
-        back: "Il <strong>recupero attivo</strong> delle informazioni migliora la memoria più della semplice rilettura.",
+        id: "c-validity",
+        front: "Validità interna",
+        back: "Il grado in cui l’effetto osservato può essere attribuito alla variabile indipendente.",
         known: 2,
         missed: 0,
       },
     ],
   },
   {
-    id: "storia-design",
-    folderId: DEFAULT_FOLDER_ID,
-    emoji: "",
-    title: "Storia del design",
-    description: "Movimenti, oggetti e progettisti",
-    color: "#775566",
-    cardColor: "#eadde3",
-    visibility: "private",
-    keywordHelp: false,
-    createdAt: 2,
-    cards: [
-      {
-        id: "d1",
-        front: "In che anno nasce il Bauhaus?",
-        back: "Nel 1919 a Weimar, fondato da Walter Gropius.",
-        known: 1,
-        missed: 0,
-      },
-      {
-        id: "d2",
-        front: "Principio centrale del Bauhaus",
-        back: "Unire arte, artigianato e produzione industriale in una progettazione funzionale.",
-        known: 0,
-        missed: 1,
-      },
-      {
-        id: "d3",
-        front: "Chi progettò la sedia Wassily?",
-        back: "Marcel Breuer, tra il 1925 e il 1926.",
-        known: 0,
-        missed: 0,
-      },
-      {
-        id: "d4",
-        front: "Che cos’è il Good Design?",
-        back: "Un approccio che promuove oggetti accessibili, funzionali e adatti alla produzione di massa.",
-        known: 0,
-        missed: 0,
-      },
-    ],
-  },
-  {
-    id: "inglese-c1",
-    folderId: DEFAULT_FOLDER_ID,
-    emoji: "",
+    id: "d-english",
+    folderId: "f-language",
     title: "English · C1",
-    description: "Lessico per scrittura e conversazione",
-    color: "#668171",
-    cardColor: "#dce8df",
-    visibility: "private",
+    description: "Vocabulary for writing and conversation",
+    color: "#8099b5",
+    pattern: "lines",
+    visibility: "public",
     keywordHelp: false,
+    order: "random",
+    direction: "back-first",
     createdAt: 3,
     cards: [
       {
-        id: "e1",
-        front: "To shed light on",
-        back: "Fare luce su; chiarire o rendere più comprensibile qualcosa.",
-        known: 3,
-        missed: 0,
-      },
-      {
-        id: "e2",
-        front: "Compelling",
-        back: "Convincente, avvincente, capace di attirare fortemente l’attenzione.",
+        id: "c-nuance",
+        front: "Nuance",
+        back: "A subtle difference in meaning, expression, or sound.",
         known: 1,
-        missed: 2,
+        missed: 1,
       },
       {
-        id: "e3",
-        front: "Notwithstanding",
-        back: "Nonostante; malgrado. Può funzionare come preposizione, avverbio o congiunzione.",
+        id: "c-compelling",
+        front: "Compelling",
+        back: "Evoking interest, attention, or admiration in a powerfully irresistible way.",
         known: 0,
-        missed: 0,
+        missed: 1,
       },
     ],
   },
 ];
 
-const demoCommunityDecks: PublicDeck[] = [
-  {
-    id: "community-neuroscienze",
-    catalogId: "demo:community-neuroscienze",
-    ownerId: "lume-curated",
-    author: "Lume Curated",
-    folderId: "community",
-    emoji: "",
-    title: "Neuroscienze essenziali",
-    description: "Neuroni, sinapsi e plasticità cerebrale",
-    color: "#526b84",
-    cardColor: "#dce5ed",
-    font: "helvetica",
-    visibility: "public",
-    keywordHelp: true,
-    createdAt: 10,
-    cards: [
-      { id: "cn1", front: "Che cos’è la plasticità sinaptica?", back: "La capacità delle <strong>connessioni tra neuroni</strong> di rafforzarsi o indebolirsi in risposta all’esperienza.", known: 0, missed: 0 },
-      { id: "cn2", front: "Funzione della mielina", back: "Isola gli assoni e rende più rapida la <strong>trasmissione dell’impulso nervoso</strong>.", known: 0, missed: 0 },
-    ],
-  },
-  {
-    id: "community-storia-arte",
-    catalogId: "demo:community-storia-arte",
-    ownerId: "studio-aperto",
-    author: "Studio Aperto",
-    folderId: "community",
-    emoji: "",
-    title: "Avanguardie artistiche",
-    description: "Un ripasso rapido dal Futurismo al Surrealismo",
-    color: "#b4863e",
-    cardColor: "#f2e6c9",
-    font: "baskerville",
-    visibility: "public",
-    keywordHelp: false,
-    createdAt: 11,
-    cards: [
-      { id: "ca1", front: "Quando nasce il Futurismo?", back: "Nel 1909 con la pubblicazione del manifesto di Filippo Tommaso Marinetti.", known: 0, missed: 0 },
-      { id: "ca2", front: "Tema centrale del Surrealismo", back: "L’esplorazione dell’inconscio, del sogno e dell’automatismo psichico.", known: 0, missed: 0 },
-    ],
-  },
-  {
-    id: "community-inglese-academic",
-    catalogId: "demo:community-inglese-academic",
-    ownerId: "language-notes",
-    author: "Language Notes",
-    folderId: "community",
-    emoji: "",
-    title: "Academic English",
-    description: "Espressioni utili per saggi e presentazioni",
-    color: "#668171",
-    cardColor: "#dce8df",
-    font: "bookerly",
-    visibility: "public",
-    keywordHelp: false,
-    createdAt: 12,
-    cards: [
-      { id: "ce1", front: "To account for", back: "Spiegare o rappresentare la causa di qualcosa.", known: 0, missed: 0 },
-      { id: "ce2", front: "A compelling argument", back: "Un’argomentazione particolarmente convincente e persuasiva.", known: 0, missed: 0 },
-    ],
-  },
-];
-
-const defaultSettings: Settings = {
-  theme: "light",
-  font: "lume",
-  volume: 0.28,
-  focusMinutes: 25,
-  breathingIntervalMinutes: 0,
-  bestStreak: 0,
-  typographyRevision: 2,
-};
-
-function sanitizeRichText(value: unknown) {
-  if (typeof value !== "string") return "";
-  const tokens: string[] = [];
-  const protectedValue = value.replace(
-    /<\s*(\/?)\s*(strong|b|em|i|u|br)\b[^>]*>/gi,
-    (_, closing: string, tag: string) => {
-      const canonical = tag.toLowerCase() === "b"
-        ? "strong"
-        : tag.toLowerCase() === "i"
-          ? "em"
-          : tag.toLowerCase();
-      const token = canonical === "br" ? "<br>" : `<${closing ? "/" : ""}${canonical}>`;
-      tokens.push(token);
-      return `%%LUME_TAG_${tokens.length - 1}%%`;
-    },
-  );
-  return protectedValue
-    .replace(/<[^>]*>/g, "")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/%%LUME_TAG_(\d+)%%/g, (_, index: string) => tokens[Number(index)] ?? "")
-    .replace(/&nbsp;/g, " ")
-    .trim();
+function makeId(prefix: string) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function plainText(value: unknown) {
-  return sanitizeRichText(value)
-    .replace(/<br>/gi, " ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
+function plainText(value: string) {
+  return value.replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function inlineMarkdown(value: string) {
-  const escaped = value
+function getContrast(color: string) {
+  const hex = color.replace("#", "");
+  const r = Number.parseInt(hex.slice(0, 2), 16);
+  const g = Number.parseInt(hex.slice(2, 4), 16);
+  const b = Number.parseInt(hex.slice(4, 6), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 156 ? "#24231f" : "#fffdf8";
+}
+
+function tint(color: string, amount = 0.78) {
+  const hex = color.replace("#", "");
+  const rgb = [0, 2, 4].map((index) => Number.parseInt(hex.slice(index, index + 2), 16));
+  return `#${rgb
+    .map((channel) => Math.round(channel + (255 - channel) * amount).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function darken(color: string, amount = 0.38) {
+  const hex = color.replace("#", "");
+  const rgb = [0, 2, 4].map((index) => Number.parseInt(hex.slice(index, index + 2), 16));
+  return `#${rgb.map((channel) => Math.round(channel * (1 - amount)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function escapeHtml(value: string) {
+  return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  return sanitizeRichText(
-    escaped
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/__(.+?)__/g, "<u>$1</u>")
-      .replace(/\*(.+?)\*/g, "<em>$1</em>"),
-  );
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
-function hasBoldKeywords(value: string) {
-  return /<strong>[^<]+<\/strong>/i.test(sanitizeRichText(value));
+function normalizeRichText(value: string) {
+  const source = /<[a-z][\s\S]*>/i.test(value) ? value : escapeHtml(value);
+  return source
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<u>$1</u>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
 }
 
-function keywordMarkup(value: string) {
-  let insideStrong = false;
-  return sanitizeRichText(value)
-    .split(/(<\/?(?:strong|em|u)>|<br>)/i)
-    .map((part) => {
-      if (!part) return "";
-      if (/^<strong>$/i.test(part)) {
-        insideStrong = true;
-        return part;
-      }
-      if (/^<\/strong>$/i.test(part)) {
-        insideStrong = false;
-        return part;
-      }
-      if (/^</.test(part)) return part;
-      return `<span class="${insideStrong ? "keyword-visible" : "keyword-hidden"}">${part}</span>`;
-    })
-    .join("");
-}
-
-const psychologyKeywordPatterns: Record<string, string[]> = {
-  p1: ["capacità limitata"],
-  p2: ["primacy", "recency"],
-  p3: ["sessioni separate nel tempo"],
-  p4: ["informazioni apprese più di recente"],
-  p5: ["consapevolezza", "regolazione"],
-  p6: ["recupero attivo"],
-};
-
-function addPsychologyKeywords(card: Card) {
-  if (hasBoldKeywords(card.back)) return card;
-  const patterns = psychologyKeywordPatterns[card.id] ?? [];
+function normalizeDeck(deck: Deck): Deck {
   return {
-    ...card,
-    back: patterns.reduce(
-      (text, pattern) => text.replace(pattern, `<strong>${pattern}</strong>`),
-      card.back,
-    ),
+    ...deck,
+    cardColorMode: deck.cardColorMode ?? "single",
+    cardColor: deck.cardColor ?? deck.color,
+    votes: deck.votes ?? 0,
+    userVote: deck.userVote ?? 0,
+    cards: deck.cards.map((card) => ({
+      ...card,
+      front: normalizeRichText(card.front),
+      back: normalizeRichText(card.back),
+      pinComment: card.pinComment ?? "",
+    })),
   };
 }
 
-function normalizeFolders(value: unknown): Folder[] {
-  if (!Array.isArray(value) || !value.length) return demoFolders;
-  return value
-    .filter((folder) => folder && typeof folder === "object")
-    .map((folder, index) => {
-      const candidate = folder as Partial<Folder>;
-      return {
-        id: typeof candidate.id === "string" ? candidate.id : uid("folder"),
-        title:
-          typeof candidate.title === "string" && candidate.title.trim()
-            ? candidate.title
-            : `Cartella ${index + 1}`,
-        color: typeof candidate.color === "string" ? candidate.color : "#e8c47d",
-        emoji: "",
-        visibility: candidate.visibility === "public" ? "public" : "private",
-        createdAt: typeof candidate.createdAt === "number" ? candidate.createdAt : Date.now() + index,
-      };
-    });
-}
-
-function normalizeDecks(value: unknown): Deck[] {
-  if (!Array.isArray(value)) return demoDecks;
-  return value
-    .filter((deck) => deck && typeof deck === "object")
-    .map((deck, index) => {
-      const candidate = deck as Partial<Deck>;
-      const title =
-        typeof candidate.title === "string" && candidate.title.trim()
-          ? candidate.title
-          : `Set ${index + 1}`;
-      const keywordHelp =
-        typeof candidate.keywordHelp === "boolean"
-          ? candidate.keywordHelp
-          : title.toLowerCase() === "psicologia cognitiva";
-      const cards = (Array.isArray(candidate.cards) ? candidate.cards : [])
-        .filter((card) => card && typeof card === "object")
-        .map((card) => {
-          const item = card as Partial<Card>;
-          return {
-            id: typeof item.id === "string" ? item.id : uid("card"),
-            front: sanitizeRichText(item.front),
-            back: sanitizeRichText(item.back),
-            known: typeof item.known === "number" ? item.known : 0,
-            missed: typeof item.missed === "number" ? item.missed : 0,
-          } satisfies Card;
-        })
-        .map((card) =>
-          keywordHelp && title.toLowerCase() === "psicologia cognitiva"
-            ? addPsychologyKeywords(card)
-            : card,
-        );
-      return {
-        ...candidate,
-        id: typeof candidate.id === "string" ? candidate.id : uid("deck"),
-        folderId:
-          typeof candidate.folderId === "string"
-            ? candidate.folderId
-            : DEFAULT_FOLDER_ID,
-        emoji: "",
-        title,
-        description:
-          typeof candidate.description === "string" ? candidate.description : "",
-        color: typeof candidate.color === "string" ? candidate.color : palettes[0].color,
-        cardColor:
-          typeof candidate.cardColor === "string" ? candidate.cardColor : palettes[0].card,
-        font: normalizeFont(candidate.font),
-        visibility: candidate.visibility === "public" ? "public" : "private",
-        keywordHelp,
-        cards,
-        createdAt:
-          typeof candidate.createdAt === "number" ? candidate.createdAt : Date.now() + index,
-      } as Deck;
-    });
-}
-
-function normalizePublicDeck(value: unknown, fallbackId: string): PublicDeck | null {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<PublicDeck>;
-  const normalized = normalizeDecks([{ ...candidate, folderId: "community", visibility: "public" }])[0];
-  if (!normalized) return null;
+function toCloudDeck(deck: Deck): CloudDeck {
   return {
-    ...normalized,
-    catalogId: typeof candidate.catalogId === "string" ? candidate.catalogId : fallbackId,
-    ownerId: typeof candidate.ownerId === "string" ? candidate.ownerId : "community",
-    author: typeof candidate.author === "string" && candidate.author.trim() ? candidate.author : "Studente Lume",
-    sourceFolderId:
-      typeof candidate.sourceFolderId === "string" ? candidate.sourceFolderId : undefined,
-    sourceFolderTitle:
-      typeof candidate.sourceFolderTitle === "string" ? candidate.sourceFolderTitle : undefined,
-    sourceFolderPublic: candidate.sourceFolderPublic === true,
+    id: deck.id,
+    folderId: deck.folderId,
+    title: deck.title,
+    description: deck.description,
+    color: deck.color,
+    pattern: deck.pattern,
+    visibility: deck.visibility,
+    keywordHelp: deck.keywordHelp,
+    order: deck.order,
+    direction: deck.direction,
+    cardColorMode: deck.cardColorMode,
+    cardColor: deck.cardColor,
+    cards: deck.cards.map((card, position) => ({
+      id: card.id,
+      position,
+      front: card.front,
+      back: card.back,
+      known: card.known,
+      missed: card.missed,
+      pinned: card.pinned,
+      pinComment: card.pinComment,
+    })),
+    createdAt: deck.createdAt,
+    lastStudied: deck.lastStudied,
   };
 }
 
-function uid(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+function fromCloudDeck(deck: CloudDeck): Deck {
+  const validPatterns: Pattern[] = ["plain", "lines", "grid", "waves", "dots", "botanical"];
+  return normalizeDeck({
+    ...deck,
+    pattern: validPatterns.includes(deck.pattern as Pattern) ? deck.pattern as Pattern : "plain",
+    cards: deck.cards.map((card) => ({ ...card })),
+  });
 }
 
-function formatRelativeTime(timestamp?: number) {
+function cloudLibrarySnapshot(folders: Folder[], decks: Deck[], studyDays: string[], focusMinutes: number): CloudLibrary {
+  return {
+    folders: folders.map((folder) => ({ ...folder })),
+    decks: decks.filter((deck) => !deck.community).map(toCloudDeck),
+    studyDays: [...studyDays],
+    focusMinutes,
+  };
+}
+
+function publicDecksFromLibrary(library: CloudLibrary) {
+  const folderMap = new Map(library.folders.map((folder) => [folder.id, folder]));
+  const folderIsPublic = (folderId: string | null) => {
+    const visited = new Set<string>();
+    let current = folderId ? folderMap.get(folderId) : undefined;
+    while (current && !visited.has(current.id)) {
+      if (current.visibility === "public") return true;
+      visited.add(current.id);
+      current = current.parentId ? folderMap.get(current.parentId) : undefined;
+    }
+    return false;
+  };
+  return library.decks.filter((deck) => deck.visibility === "public" || folderIsPublic(deck.folderId));
+}
+
+function formatRelative(timestamp?: number) {
   if (!timestamp) return "Mai studiato";
-  const hours = Math.floor((Date.now() - timestamp) / 3_600_000);
-  if (hours < 1) return "Poco fa";
-  if (hours < 24) return `${hours} ${hours === 1 ? "ora" : "ore"} fa`;
-  const days = Math.floor(hours / 24);
-  return `${days} ${days === 1 ? "giorno" : "giorni"} fa`;
+  const minutes = Math.round((Date.now() - timestamp) / 60000);
+  if (minutes < 2) return "Adesso";
+  if (minutes < 60) return `${minutes} min fa`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h fa`;
+  return `${Math.round(hours / 24)} giorni fa`;
 }
 
-function mastery(deck: Deck) {
-  const known = deck.cards.reduce((sum, card) => sum + card.known, 0);
-  const attempts = deck.cards.reduce(
-    (sum, card) => sum + card.known + card.missed,
-    0,
-  );
-  return attempts ? Math.round((known / attempts) * 100) : 0;
+function localDayKey(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function getTextColor(hex: string) {
-  const value = hex.replace("#", "");
-  const red = Number.parseInt(value.slice(0, 2), 16);
-  const green = Number.parseInt(value.slice(2, 4), 16);
-  const blue = Number.parseInt(value.slice(4, 6), 16);
-  return red * 0.299 + green * 0.587 + blue * 0.114 > 155
-    ? "#2b2925"
-    : "#fffdf8";
+function consecutiveStudyDays(days: string[]) {
+  const studied = new Set(days);
+  const cursor = new Date();
+  cursor.setHours(12, 0, 0, 0);
+  if (!studied.has(localDayKey(cursor.getTime()))) cursor.setDate(cursor.getDate() - 1);
+  let count = 0;
+  while (studied.has(localDayKey(cursor.getTime()))) {
+    count += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return count;
 }
 
-function cleanMarkdown(value: string) {
-  return inlineMarkdown(value.replace(/^[-*+]\s+/, "").trim());
+function extractKeywords(html: string) {
+  return Array.from(html.matchAll(/<strong[^>]*>(.*?)<\/strong>/gi))
+    .map((match) => plainText(match[1]))
+    .filter(Boolean);
 }
 
-function parseStudyMarkdown(text: string) {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim());
-  const pairs = lines
-    .map((line) => {
-      const match = line.match(/^\s*(.+?)\s*::\s*(.+?)\s*$/);
-      return match
-        ? { front: cleanMarkdown(match[1]), back: cleanMarkdown(match[2]) }
-        : null;
-    })
-    .filter((pair): pair is ImportPair => Boolean(pair?.front && pair?.back));
-
-  return pairs;
+function migrateOldData(): { folders: Folder[]; decks: Deck[] } | null {
+  try {
+    const oldFolders = JSON.parse(localStorage.getItem("lume-folders-v1") ?? "null");
+    const oldDecks = JSON.parse(localStorage.getItem("lume-flashcards-v1") ?? "null");
+    if (!Array.isArray(oldFolders) || !Array.isArray(oldDecks)) return null;
+    const folders = oldFolders.map((folder: Record<string, unknown>, index: number): Folder => ({
+      id: String(folder.id ?? makeId("folder")),
+      parentId: null,
+      title: String(folder.title ?? `Cartella ${index + 1}`),
+      color: String(folder.color ?? colors[index % colors.length]),
+      visibility: folder.visibility === "public" ? "public" : "private",
+      createdAt: Number(folder.createdAt ?? Date.now() + index),
+    }));
+    const decks = oldDecks.map((deck: Record<string, unknown>, index: number): Deck => ({
+      id: String(deck.id ?? makeId("deck")),
+      folderId: typeof deck.folderId === "string" && folders.some((folder) => folder.id === deck.folderId) ? deck.folderId : null,
+      title: String(deck.title ?? `Set ${index + 1}`),
+      description: String(deck.description ?? ""),
+      color: String(deck.color ?? colors[index % colors.length]),
+      pattern: (["plain", "lines", "grid", "waves", "dots", "botanical"] as string[]).includes(String(deck.pattern)) ? (deck.pattern as Pattern) : "plain",
+      visibility: deck.visibility === "public" ? "public" : "private",
+      keywordHelp: Boolean(deck.keywordHelp),
+      order: deck.defaultOrder === "random" ? "random" : "sequential",
+      direction: deck.defaultDirection === "back-first" ? "back-first" : "front-first",
+      cardColorMode: "single",
+      cardColor: String(deck.color ?? colors[index % colors.length]),
+      createdAt: Number(deck.createdAt ?? Date.now() + index),
+      lastStudied: typeof deck.lastStudied === "number" ? deck.lastStudied : undefined,
+      votes: Number(deck.votes ?? 0),
+      userVote: deck.userVote === 2 || deck.userVote === 1 || deck.userVote === -1 ? deck.userVote : 0,
+      cards: Array.isArray(deck.cards)
+        ? deck.cards.map((card: Record<string, unknown>): Card => ({
+            id: String(card.id ?? makeId("card")),
+            front: String(card.front ?? ""),
+            back: String(card.back ?? ""),
+            known: Number(card.known ?? 0),
+            missed: Number(card.missed ?? 0),
+            pinned: Boolean(card.pinned),
+            pinComment: String(card.pinComment ?? ""),
+          }))
+        : [],
+    }));
+    return { folders, decks };
+  } catch {
+    return null;
+  }
 }
 
-export default function Home() {
-  const [decks, setDecks] = useState<Deck[]>(demoDecks);
-  const [folders, setFolders] = useState<Folder[]>(demoFolders);
-  const [settings, setSettings] = useState<Settings>(defaultSettings);
-  const [view, setView] = useState<View>({ name: "home" });
+export default function LumeApp() {
+  const [folders, setFolders] = useState<Folder[]>(seedFolders);
+  const [decks, setDecks] = useState<Deck[]>(seedDecks);
   const [hydrated, setHydrated] = useState(false);
-  const [deckModalOpen, setDeckModalOpen] = useState(false);
-  const [editingDeckId, setEditingDeckId] = useState<string>();
-  const [draftFolderId, setDraftFolderId] = useState(DEFAULT_FOLDER_ID);
-  const [folderModalOpen, setFolderModalOpen] = useState(false);
-  const [editingFolderId, setEditingFolderId] = useState<string>();
-  const [cardModalOpen, setCardModalOpen] = useState(false);
-  const [importModalOpen, setImportModalOpen] = useState(false);
-  const [studyCardEditId, setStudyCardEditId] = useState<string>();
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [welcomeOpen, setWelcomeOpen] = useState(true);
-  const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [authResolved, setAuthResolved] = useState(!firebaseAuth);
-  const [authMessage, setAuthMessage] = useState("");
-  const [cloudReady, setCloudReady] = useState(false);
-  const [soundPanelOpen, setSoundPanelOpen] = useState(false);
-  const [lumePanelOpen, setLumePanelOpen] = useState(false);
-  const [lumeSession, setLumeSession] = useState<LumeSession>();
-  const [soundMode, setSoundMode] = useState<SoundMode>("off");
-  const [study, setStudy] = useState<StudySession>();
-  const [studyRequest, setStudyRequest] = useState<StudyRequest>();
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [sidebarWidth, setSidebarWidth] = useState(226);
+  const [view, setView] = useState<View>({ name: "home" });
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(["f-uni", "f-psy"]));
+  const [createMenu, setCreateMenu] = useState(false);
+  const [folderCreator, setFolderCreator] = useState<{ parentId: string | null; editId?: string } | null>(null);
+  const [deckCreator, setDeckCreator] = useState<{ folderId: string | null; editId?: string } | null>(null);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [randomKey, setRandomKey] = useState(0);
+  const [randomFlipped, setRandomFlipped] = useState(false);
+  const [study, setStudy] = useState<StudyState | null>(null);
+  const [showKeywords, setShowKeywords] = useState(false);
   const [studySettingsOpen, setStudySettingsOpen] = useState(false);
-  const [remotePublicDecks, setRemotePublicDecks] = useState<PublicDeck[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const noiseSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const gainRef = useRef<GainNode | null>(null);
+  const spaceHoldTimer = useRef<number | null>(null);
+  const spaceLongPress = useRef(false);
+  const [deckTransfer, setDeckTransfer] = useState<{ deckId: string; targetFolderId: string } | null>(null);
+  const [batchMove, setBatchMove] = useState<string[] | null>(null);
+  const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
+  const [focusSetup, setFocusSetup] = useState(false);
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [studyDays, setStudyDays] = useState<string[]>(() => seedDecks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
+  const [focus, setFocus] = useState<{ startedAt: number; duration: number; pausedAt?: number; finishedAt?: number } | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
+  const [timerVisible, setTimerVisible] = useState(true);
+  const [breathing, setBreathing] = useState<{ startedAt: number } | null>(null);
+  const [account, setAccount] = useState<CloudAccount | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus>(cloudIsConfigured() ? "checking" : "unavailable");
+  const [cloudReady, setCloudReady] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountNotice, setAccountNotice] = useState("");
+  const [publicDecks, setPublicDecks] = useState<Deck[]>([]);
+  const [voteBusy, setVoteBusy] = useState(false);
+  const cloudBaselineRef = useRef<CloudLibrary | null>(null);
+  const publicBaselineRef = useRef<CloudDeck[]>([]);
+  const syncChainRef = useRef<Promise<void>>(Promise.resolve());
+  const libraryRef = useRef<CloudLibrary>(cloudLibrarySnapshot(seedFolders, seedDecks, [], 25));
 
   useEffect(() => {
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (cancelled) return;
-      try {
-        const storedDecks = localStorage.getItem(STORAGE_KEY);
-        const storedFolders = localStorage.getItem(FOLDERS_KEY);
-        const storedSettings = localStorage.getItem(SETTINGS_KEY);
-        if (storedDecks) setDecks(normalizeDecks(JSON.parse(storedDecks)));
-        setFolders(
-          storedFolders
-            ? normalizeFolders(JSON.parse(storedFolders))
-            : demoFolders,
-        );
-        if (storedSettings) {
-          const parsedSettings = JSON.parse(storedSettings) as Partial<Settings>;
-          setSettings({
-            ...defaultSettings,
-            ...parsedSettings,
-            font:
-              parsedSettings.typographyRevision === 2
-                ? normalizeFont(parsedSettings.font)
-                : "lume",
-            typographyRevision: 2,
-          });
+    libraryRef.current = cloudLibrarySnapshot(folders, decks, studyDays, focusMinutes);
+  }, [folders, decks, studyDays, focusMinutes]);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STORE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as { folders?: Folder[]; decks?: Deck[]; studyDays?: string[]; focusMinutes?: number };
+        if (Array.isArray(parsed.folders) && Array.isArray(parsed.decks)) {
+          setFolders(parsed.folders);
+          setDecks(parsed.decks.map(normalizeDeck));
+          const restoredDays = Array.isArray(parsed.studyDays) ? parsed.studyDays.filter((day): day is string => typeof day === "string") : [];
+          setStudyDays(restoredDays.length ? restoredDays : parsed.decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
+          if (typeof parsed.focusMinutes === "number") setFocusMinutes(Math.min(240, Math.max(1, parsed.focusMinutes)));
         }
-      } catch {
-        // If local data is malformed, the app safely falls back to demo content.
+      } else {
+        const migrated = migrateOldData();
+        if (migrated) {
+          setFolders(migrated.folders);
+          setDecks(migrated.decks.map(normalizeDeck));
+          setStudyDays(migrated.decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
+        }
       }
+      const storedTheme = localStorage.getItem(THEME_KEY);
+      if (storedTheme === "dark") setTheme("dark");
+    } finally {
       setHydrated(true);
-    });
-    return () => {
-      cancelled = true;
-    };
+    }
   }, []);
 
   useEffect(() => {
-    if (hydrated) localStorage.setItem(STORAGE_KEY, JSON.stringify(decks));
-  }, [decks, hydrated]);
-
-  useEffect(() => {
-    if (hydrated) localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
-  }, [folders, hydrated]);
-
-  useEffect(() => {
-    if (hydrated)
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    document.documentElement.dataset.theme = settings.theme;
-    document.documentElement.dataset.font = settings.font;
-    document.documentElement.style.colorScheme = settings.theme;
-    if (gainRef.current) gainRef.current.gain.value = settings.volume;
-    if (audioRef.current) audioRef.current.volume = settings.volume;
-  }, [settings, hydrated]);
+    document.documentElement.dataset.theme = theme;
+    if (hydrated) localStorage.setItem(THEME_KEY, theme);
+  }, [theme, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
-    if (!firebaseAuth) {
-      setAuthResolved(true);
+    const id = window.setTimeout(() => {
+      localStorage.setItem(STORE_KEY, JSON.stringify({ folders, decks, studyDays, focusMinutes }));
+    }, 250);
+    return () => window.clearTimeout(id);
+  }, [folders, decks, studyDays, focusMinutes, hydrated]);
+
+  const refreshPublicDecks = useCallback(async (uid?: string) => {
+    if (!cloudIsConfigured()) {
+      setPublicDecks([]);
       return;
     }
+    const remote = await loadPublicDecks(uid);
+    setPublicDecks(remote.map((deck) => normalizeDeck({
+      ...fromCloudDeck(deck),
+      id: deck.id,
+      publicId: deck.publicId,
+      ownerId: deck.ownerId,
+      ownerName: deck.ownerName,
+      votes: deck.score,
+      ratingsCount: deck.ratingsCount,
+      userVote: deck.userVote,
+      community: true,
+    })));
+  }, []);
 
-    let cancelled = false;
-    let unsubscribe: () => void = () => undefined;
-
-    const restoreSession = async () => {
-      try {
-        await setPersistence(firebaseAuth, browserLocalPersistence);
-      } catch {
-        // Firebase will fall back to the persistence available in the browser.
-      }
-
-      if (isSignInWithEmailLink(firebaseAuth, window.location.href)) {
-        const email = localStorage.getItem(AUTH_EMAIL_KEY);
-        if (email) {
-          try {
-            await signInWithEmailLink(firebaseAuth, email, window.location.href);
-            localStorage.removeItem(AUTH_EMAIL_KEY);
-            window.history.replaceState({}, document.title, window.location.pathname);
-          } catch {
-            setAuthMessage("Il link non è più valido. Richiedine uno nuovo.");
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!cloudIsConfigured()) {
+      return;
+    }
+    let active = true;
+    const unsubscribe = observeAccount((nextAccount) => {
+      if (!active) return;
+      setAccount(nextAccount);
+      setCloudReady(false);
+      void (async () => {
+        try {
+          if (!nextAccount) {
+            cloudBaselineRef.current = null;
+            publicBaselineRef.current = [];
+            setCloudStatus("signed-out");
+            await refreshPublicDecks();
+            return;
           }
+          setCloudStatus("loading");
+          const [stored, existingPublic] = await Promise.all([
+            loadPrivateLibrary(nextAccount.uid),
+            loadPublicDecks(nextAccount.uid),
+          ]);
+          if (!active) return;
+          let selectedLibrary: CloudLibrary;
+          if (stored.exists) {
+            selectedLibrary = stored.library;
+            setFolders(stored.library.folders.map((folder) => ({ ...folder })));
+            setDecks(stored.library.decks.map(fromCloudDeck));
+            setStudyDays(stored.library.studyDays);
+            setFocusMinutes(Math.min(240, Math.max(1, stored.library.focusMinutes)));
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+          } else {
+            selectedLibrary = libraryRef.current;
+            await syncPrivateLibrary(nextAccount, null, selectedLibrary);
+          }
+          const nextPublic = publicDecksFromLibrary(selectedLibrary);
+          const previousPublic = existingPublic
+            .filter((deck) => deck.ownerId === nextAccount.uid)
+            .map((deck) => ({ ...toCloudDeck(fromCloudDeck(deck)), id: deck.sourceDeckId }));
+          await syncPublicLibrary(nextAccount, previousPublic, nextPublic);
+          cloudBaselineRef.current = selectedLibrary;
+          publicBaselineRef.current = nextPublic;
+          setCloudReady(true);
+          setCloudStatus("synced");
+          setAccountNotice(stored.exists ? "Account collegato. I tuoi dati sono sincronizzati." : "Account collegato. Le flashcards di questo dispositivo sono state salvate online.");
+          await refreshPublicDecks(nextAccount.uid);
+        } catch (error) {
+          if (!active) return;
+          setCloudStatus("error");
+          setAccountNotice(friendlyCloudError(error));
         }
-      }
-
-      if (cancelled) return;
-      unsubscribe = onAuthStateChanged(firebaseAuth, (nextUser) => {
-        setUser(nextUser);
-        setAuthResolved(true);
-        if (nextUser) setAccountOpen(false);
-        if (!nextUser) setCloudReady(false);
-      });
-    };
-
-    void restoreSession();
+      })();
+    });
     return () => {
-      cancelled = true;
+      active = false;
       unsubscribe();
     };
-  }, [hydrated]);
-
-  const stopSound = useCallback(() => {
-    audioRef.current?.pause();
-    audioRef.current = null;
-    try {
-      noiseSourceRef.current?.stop();
-    } catch {
-      // The node may already be stopped.
-    }
-    noiseSourceRef.current = null;
-    void audioContextRef.current?.close();
-    audioContextRef.current = null;
-    gainRef.current = null;
-  }, []);
-
-  useEffect(() => stopSound, [stopSound]);
+  }, [hydrated, refreshPublicDecks]);
 
   useEffect(() => {
-    if (!hydrated || lumeSession || settings.breathingIntervalMinutes <= 0)
-      return;
-    const timer = window.setTimeout(() => {
-      setLumeSession({
-        kind: "breathing",
-        startedAt: Date.now(),
-        automatic: true,
+    if (!hydrated || !account || !cloudReady) return;
+    const timeout = window.setTimeout(() => {
+      const snapshot = cloudLibrarySnapshot(folders, decks, studyDays, focusMinutes);
+      syncChainRef.current = syncChainRef.current.then(async () => {
+        setCloudStatus("syncing");
+        const nextPublic = publicDecksFromLibrary(snapshot);
+        await syncPrivateLibrary(account, cloudBaselineRef.current, snapshot);
+        await syncPublicLibrary(account, publicBaselineRef.current, nextPublic);
+        cloudBaselineRef.current = snapshot;
+        publicBaselineRef.current = nextPublic;
+        setCloudStatus("synced");
+        await refreshPublicDecks(account.uid);
+      }).catch((error) => {
+        setCloudStatus("error");
+        setAccountNotice(friendlyCloudError(error));
       });
-    }, settings.breathingIntervalMinutes * 60_000);
-    return () => window.clearTimeout(timer);
-  }, [hydrated, lumeSession, settings.breathingIntervalMinutes]);
+    }, 850);
+    return () => window.clearTimeout(timeout);
+  }, [folders, decks, studyDays, focusMinutes, hydrated, account, cloudReady, refreshPublicDecks]);
 
-  const playSound = (mode: SoundMode) => {
-    stopSound();
-    setSoundMode(mode);
-    if (mode === "off") return;
+  useEffect(() => {
+    if (!focus && !breathing) return;
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      setClock(now);
+      setFocus((current) => {
+        if (!current || current.pausedAt) return current;
+        if (current.finishedAt) return current;
+        return now - current.startedAt >= current.duration ? { ...current, finishedAt: now } : current;
+      });
+      setBreathing((current) => current && now - current.startedAt >= 80000 ? null : current);
+    }, 120);
+    return () => window.clearInterval(id);
+  }, [focus, breathing]);
 
-    if (mode === "bach") {
-      const audio = new Audio(BACH_AUDIO);
-      audio.loop = true;
-      audio.volume = settings.volume;
-      audioRef.current = audio;
-      void audio.play().catch(() => setSoundMode("off"));
-      return;
-    }
+  useEffect(() => {
+    if (!focus?.finishedAt) return;
+    const timeout = window.setTimeout(() => {
+      setFocus(null);
+      setView({ name: "home" });
+    }, 1800);
+    return () => window.clearTimeout(timeout);
+  }, [focus?.finishedAt]);
 
-    const context = new AudioContext();
-    const length = context.sampleRate * 4;
-    const buffer = context.createBuffer(1, length, context.sampleRate);
-    const data = buffer.getChannelData(0);
-    let last = 0;
-    for (let i = 0; i < length; i += 1) {
-      const white = Math.random() * 2 - 1;
-      if (mode === "brown") {
-        last = (last + 0.02 * white) / 1.02;
-        data[i] = last * 3.5;
-      } else {
-        data[i] = white * 0.34;
+  const folderById = useCallback((id: string | null) => folders.find((folder) => folder.id === id), [folders]);
+
+  const folderAncestors = useCallback(
+    (id: string | null) => {
+      const result: Folder[] = [];
+      let current = folderById(id);
+      const visited = new Set<string>();
+      while (current && !visited.has(current.id)) {
+        result.unshift(current);
+        visited.add(current.id);
+        current = folderById(current.parentId);
       }
-    }
-    const source = context.createBufferSource();
-    const gain = context.createGain();
-    const filter = context.createBiquadFilter();
-    filter.type = mode === "rain" ? "highpass" : "lowpass";
-    filter.frequency.value = mode === "rain" ? 900 : 850;
-    gain.gain.value = settings.volume;
-    source.buffer = buffer;
-    source.loop = true;
-    source.connect(filter).connect(gain).connect(context.destination);
-    source.start();
-    audioContextRef.current = context;
-    noiseSourceRef.current = source;
-    gainRef.current = gain;
-  };
+      return result;
+    },
+    [folderById],
+  );
 
-  const selectedDeck =
-    view.name === "deck"
-      ? decks.find((deck) => deck.id === view.deckId)
-      : undefined;
-  const selectedFolder =
-    view.name === "folder"
-      ? folders.find((folder) => folder.id === view.folderId)
-      : selectedDeck
-        ? folders.find((folder) => folder.id === selectedDeck.folderId)
-        : undefined;
-  const authUserId = user?.uid;
-  const publicFolderIds = useMemo(
-    () => new Set(folders.filter((folder) => folder.visibility === "public").map((folder) => folder.id)),
+  const folderIsPublic = useCallback(
+    (id: string | null) => folderAncestors(id).some((folder) => folder.visibility === "public"),
+    [folderAncestors],
+  );
+
+  const deckIsPublic = useCallback(
+    (deck: Deck) => deck.visibility === "public" || folderIsPublic(deck.folderId),
+    [folderIsPublic],
+  );
+
+  const descendantFolderIds = useCallback(
+    (rootId: string) => {
+      const result = new Set<string>([rootId]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        folders.forEach((folder) => {
+          if (folder.parentId && result.has(folder.parentId) && !result.has(folder.id)) {
+            result.add(folder.id);
+            changed = true;
+          }
+        });
+      }
+      return result;
+    },
     [folders],
   );
-  const localPublicDecks = useMemo<PublicDeck[]>(
-    () =>
-      decks
-        .filter((deck) => deck.visibility === "public" || publicFolderIds.has(deck.folderId))
-        .map((deck) => {
-          const sourceFolder = folders.find((folder) => folder.id === deck.folderId);
-          return {
-            ...deck,
-            visibility: "public",
-            catalogId: authUserId ? `${authUserId}_${deck.id}` : `local:${deck.id}`,
-            ownerId: authUserId ?? "local-user",
-            author: user?.email?.split("@")[0] ?? "Il tuo set pubblico",
-            sourceFolderId: sourceFolder?.id,
-            sourceFolderTitle: sourceFolder?.title,
-            sourceFolderPublic: sourceFolder?.visibility === "public",
-          };
-        }),
-    [authUserId, decks, folders, publicFolderIds, user?.email],
-  );
-  const publicCatalog = useMemo(() => {
-    const catalog = [...localPublicDecks, ...remotePublicDecks, ...demoCommunityDecks];
-    const seen = new Set<string>();
-    return catalog.filter((deck) => {
-      const key = deck.catalogId;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [localPublicDecks, remotePublicDecks]);
-  const studySourceDecks = useMemo(() => {
-    if (!study) return [];
-    if (study.target.kind === "deck") {
-      const deck = decks.find((item) => item.id === study.target.id);
-      return deck ? [deck] : [];
-    }
-    if (study.target.kind === "all") return decks;
-    if (study.target.kind === "folder") {
-      return decks.filter((deck) => deck.folderId === study.target.id);
-    }
-    const publicDeck = publicCatalog.find((deck) => deck.catalogId === study.target.id);
-    return publicDeck ? [publicDeck] : [];
-  }, [decks, publicCatalog, study]);
-  const studyDisplayDeck = useMemo<Deck | undefined>(() => {
-    if (!study || !studySourceDecks.length) return undefined;
-    if (study.target.kind !== "folder" && study.target.kind !== "all") return studySourceDecks[0];
-    const folder = study.target.kind === "folder"
-      ? folders.find((item) => item.id === study.target.id)
-      : undefined;
-    const first = studySourceDecks[0];
-    return {
-      ...first,
-      id: study.target.kind === "all"
-        ? "all-difficult-study"
-        : `folder-study:${folder?.id ?? study.target.id}`,
-      title: study.target.kind === "all" ? "Carte da rivedere" : folder?.title ?? "Cartella",
-      description: study.target.kind === "all"
-        ? "Ripasso delle carte più ostinate"
-        : "Studio completo della cartella",
-      color: folder?.color ?? first.color,
-      cards: studySourceDecks.flatMap((deck) => deck.cards),
-      keywordHelp: studySourceDecks.some((deck) => deck.keywordHelp),
-    };
-  }, [folders, study, studySourceDecks]);
-  const currentStudyCardId = study?.queue[study.index];
-  const currentStudyOwnerDeck = studySourceDecks.find((deck) =>
-    deck.cards.some((card) => card.id === currentStudyCardId),
-  );
-  const editingStudyCard = decks
-    .flatMap((deck) => deck.cards)
-    .find((card) => card.id === studyCardEditId);
-
-  useEffect(() => {
-    if (!firestore || !authUserId || !hydrated) return;
-    let cancelled = false;
-
-    const loadCloudProfile = async () => {
-      setCloudReady(false);
-      try {
-        const profileRef = doc(firestore, "users", authUserId);
-        const snapshot = await getDoc(profileRef);
-        if (cancelled) return;
-        const data = snapshot.exists() ? snapshot.data() : null;
-        if (data?.decks && Array.isArray(data.decks)) {
-          setFolders(normalizeFolders(data.folders));
-          setDecks(normalizeDecks(data.decks));
-          if (data.settings && typeof data.settings === "object") {
-            const remoteSettings = data.settings as Partial<Settings>;
-            setSettings((current) => ({
-              ...current,
-              ...remoteSettings,
-              font:
-                remoteSettings.typographyRevision === 2
-                  ? normalizeFont(remoteSettings.font)
-                  : "lume",
-              typographyRevision: 2,
-            }));
-          }
-        } else {
-          await setDoc(
-            profileRef,
-            {
-              decks: JSON.parse(JSON.stringify(decks)),
-              folders: JSON.parse(JSON.stringify(folders)),
-              settings,
-              updatedAt: Date.now(),
-            },
-            { merge: true },
-          );
-        }
-        if (!cancelled) setCloudReady(true);
-      } catch {
-        setAuthMessage(
-          "Accesso riuscito, ma la sincronizzazione Firebase deve ancora essere attivata.",
-        );
-      }
-    };
-
-    void loadCloudProfile();
-    return () => {
-      cancelled = true;
-    };
-    // The first cloud load intentionally uses the current local data only once.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authUserId, hydrated]);
-
-  useEffect(() => {
-    if (!firestore || !authUserId || !cloudReady) return;
-    const timer = window.setTimeout(() => {
-      void setDoc(
-        doc(firestore, "users", authUserId),
-        {
-          decks: JSON.parse(JSON.stringify(decks)),
-          folders: JSON.parse(JSON.stringify(folders)),
-          settings,
-          updatedAt: Date.now(),
-        },
-        { merge: true },
-      );
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [authUserId, cloudReady, decks, folders, settings]);
-
-  const refreshCommunity = useCallback(async () => {
-    if (!firestore) return;
-    try {
-      const snapshot = await getDocs(collection(firestore, "publicSets"));
-      const next = snapshot.docs
-        .map((item) => normalizePublicDeck(item.data(), item.id))
-        .filter((deck): deck is PublicDeck => Boolean(deck));
-      setRemotePublicDecks(next);
-    } catch {
-      // The curated public catalog remains available while Firebase is offline.
-    }
-  }, []);
-
-  useEffect(() => {
-    queueMicrotask(() => void refreshCommunity());
-  }, [refreshCommunity]);
-
-  useEffect(() => {
-    if (!firestore || !authUserId || !cloudReady) return;
-    const timer = window.setTimeout(() => {
-      void Promise.all(
-        decks.map((deck) => {
-          const reference = doc(firestore, "publicSets", `${authUserId}_${deck.id}`);
-          const sourceFolder = folders.find((folder) => folder.id === deck.folderId);
-          const folderIsPublic = sourceFolder?.visibility === "public";
-          if (deck.visibility !== "public" && !folderIsPublic) {
-            return deleteDoc(reference).catch(() => undefined);
-          }
-          return setDoc(reference, {
-            id: deck.id,
-            folderId: "community",
-            emoji: deck.emoji,
-            title: deck.title,
-            description: deck.description,
-            color: deck.color,
-            cardColor: deck.cardColor,
-            font: deck.font,
-            visibility: "public",
-            keywordHelp: deck.keywordHelp,
-            createdAt: deck.createdAt,
-            cards: deck.cards.map((card) => ({
-              id: card.id,
-              front: card.front,
-              back: card.back,
-              known: 0,
-              missed: 0,
-            })),
-            catalogId: `${authUserId}_${deck.id}`,
-            ownerId: authUserId,
-            author: user?.email?.split("@")[0] ?? "Studente Lume",
-            sourceFolderId: sourceFolder?.id ?? "",
-            sourceFolderTitle: sourceFolder?.title ?? "",
-            sourceFolderPublic: folderIsPublic,
-            publishedAt: Date.now(),
-          });
-        }),
-      ).catch(() => undefined);
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [authUserId, cloudReady, decks, folders, user?.email]);
 
   const totalCards = decks.reduce((sum, deck) => sum + deck.cards.length, 0);
-  const dueCards = decks.reduce(
-    (sum, deck) =>
-      sum + deck.cards.filter((card) => card.missed > card.known).length,
-    0,
+  const allAttempts = decks.flatMap((deck) => deck.cards).reduce((sum, card) => sum + card.known + card.missed, 0);
+  const knownAttempts = decks.flatMap((deck) => deck.cards).reduce((sum, card) => sum + card.known, 0);
+  const mastery = allAttempts ? Math.round((knownAttempts / allAttempts) * 100) : 0;
+  const due = decks.flatMap((deck) => deck.cards).filter((card) => card.missed > card.known / 2).length;
+  const studyDayStreak = consecutiveStudyDays(studyDays);
+  const resumeDeck = [...decks].sort((a, b) => (b.lastStudied ?? 0) - (a.lastStudied ?? 0))[0] ?? decks[0];
+  const randomCards = useMemo(
+    () => decks.flatMap((deck) => deck.cards.map((card) => ({ deck, card }))),
+    [decks],
   );
-  const overallMastery = useMemo(() => {
-    const all = decks.flatMap((deck) => deck.cards);
-    const known = all.reduce((sum, card) => sum + card.known, 0);
-    const attempts = all.reduce(
-      (sum, card) => sum + card.known + card.missed,
-      0,
-    );
-    return attempts ? Math.round((known / attempts) * 100) : 0;
-  }, [decks]);
+  const randomEntry = randomCards.length ? randomCards[Math.abs(randomKey) % randomCards.length] : null;
+  const studyLibrary = useMemo(() => [...decks, ...publicDecks], [decks, publicDecks]);
+  const exploreDecks = cloudIsConfigured() ? publicDecks : decks.filter(deckIsPublic);
 
-  const navigate = (next: View) => {
-    setView(next);
-    setSoundPanelOpen(false);
-    setLumePanelOpen(false);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const openCreateDeck = (folderId?: string) => {
-    setEditingDeckId(undefined);
-    setDraftFolderId(folderId ?? folders[0]?.id ?? DEFAULT_FOLDER_ID);
-    setDeckModalOpen(true);
-  };
-
-  const openCreateFolder = () => {
-    setEditingFolderId(undefined);
-    setFolderModalOpen(true);
-  };
-
-  const saveFolder = (data: Omit<Folder, "id" | "createdAt">) => {
-    if (editingFolderId) {
-      setFolders((current) =>
-        current.map((folder) =>
-          folder.id === editingFolderId ? { ...folder, ...data } : folder,
-        ),
-      );
-    } else {
-      const folder: Folder = {
-        ...data,
-        id: uid("folder"),
-        createdAt: Date.now(),
-      };
-      setFolders((current) => [...current, folder]);
-      navigate({ name: "folder", folderId: folder.id });
-    }
-    setFolderModalOpen(false);
-  };
-
-  const saveDeck = (data: Omit<Deck, "id" | "cards" | "createdAt">) => {
-    if (editingDeckId) {
-      const previous = decks.find((deck) => deck.id === editingDeckId);
-      if (
-        previous?.visibility === "public" &&
-        data.visibility === "private" &&
-        firestore &&
-        authUserId
-      ) {
-        const catalogId = `${authUserId}_${editingDeckId}`;
-        void deleteDoc(doc(firestore, "publicSets", catalogId)).catch(() => undefined);
-        setRemotePublicDecks((current) =>
-          current.filter((deck) => deck.catalogId !== catalogId),
-        );
+  const resolveStudyCard = useCallback(
+    (state: StudyState | null) => {
+      if (!state || state.complete) return null;
+      const cardId = state.cardIds[state.index];
+      for (const deckId of state.deckIds) {
+        const deck = studyLibrary.find((item) => item.id === deckId);
+        const card = deck?.cards.find((item) => item.id === cardId);
+        if (deck && card) return { deck, card };
       }
-      setDecks((current) =>
-        current.map((deck) =>
-          deck.id === editingDeckId ? { ...deck, ...data } : deck,
-        ),
-      );
-    } else {
-      const deck: Deck = {
-        ...data,
-        id: uid("deck"),
-        cards: [],
-        createdAt: Date.now(),
-      };
-      setDecks((current) => [deck, ...current]);
-      navigate({ name: "deck", deckId: deck.id });
-    }
-    setDeckModalOpen(false);
-  };
+      return null;
+    },
+    [studyLibrary],
+  );
 
-  const saveCards = (cards: Array<{ front: string; back: string }>) => {
-    if (!selectedDeck) return;
-    const additions = cards
-      .filter((card) => plainText(card.front) && plainText(card.back))
-      .map((card) => ({
-        id: uid("card"),
-        front: sanitizeRichText(card.front),
-        back: sanitizeRichText(card.back),
+  const studyEntry = resolveStudyCard(study);
+
+  const startStudy = useCallback(
+    (deckIds: string[], startCardId?: string) => {
+      const sourceDecks = deckIds.map((id) => studyLibrary.find((deck) => deck.id === id)).filter((deck): deck is Deck => Boolean(deck));
+      if (!sourceDecks.length) return;
+      const cards = sourceDecks.flatMap((deck) => deck.cards);
+      if (!cards.length) return;
+      const order = sourceDecks[0].order;
+      let cardIds = cards.map((card) => card.id);
+      if (order === "random") cardIds = [...cardIds].sort(() => Math.random() - 0.5);
+      if (startCardId && cardIds.includes(startCardId)) {
+        cardIds = [startCardId, ...cardIds.filter((id) => id !== startCardId)];
+      }
+      setStudy({
+        deckIds,
+        cardIds,
+        index: 0,
+        flipped: false,
         known: 0,
-        missed: 0,
-      }));
-    setDecks((current) =>
-      current.map((deck) =>
-        deck.id === selectedDeck.id
-          ? { ...deck, cards: [...deck.cards, ...additions] }
-          : deck,
-      ),
-    );
-    setCardModalOpen(false);
-  };
-
-  const openImportForSelectedDeck = () => {
-    if (!selectedDeck) return;
-    setCardModalOpen(false);
-    setImportModalOpen(true);
-  };
-
-  const saveStudyCard = (cardId: string, front: string, back: string) => {
-    if (!plainText(front) || !plainText(back)) return;
-    setDecks((current) =>
-      current.map((deck) =>
-        deck.cards.some((card) => card.id === cardId)
-          ? {
-              ...deck,
-              cards: deck.cards.map((card) =>
-                card.id === cardId
-                  ? {
-                      ...card,
-                      front: sanitizeRichText(front),
-                      back: sanitizeRichText(back),
-                    }
-                  : card,
-              ),
-            }
-          : deck,
-      ),
-    );
-    setStudyCardEditId(undefined);
-  };
-
-  const saveImportedCards = (pairs: ImportPair[]) => {
-    saveCards(pairs);
-    setImportModalOpen(false);
-  };
-
-  const removeCard = (cardId: string) => {
-    if (!selectedDeck || !window.confirm("Eliminare questa flashcard?")) return;
-    setDecks((current) =>
-      current.map((deck) =>
-        deck.id === selectedDeck.id
-          ? { ...deck, cards: deck.cards.filter((card) => card.id !== cardId) }
-          : deck,
-      ),
-    );
-  };
-
-  const removeDeck = () => {
-    if (
-      !selectedDeck ||
-      !window.confirm(`Eliminare “${selectedDeck.title}” e tutte le sue carte?`)
-    )
-      return;
-    if (selectedDeck.visibility === "public" && firestore && authUserId) {
-      const catalogId = `${authUserId}_${selectedDeck.id}`;
-      void deleteDoc(doc(firestore, "publicSets", catalogId)).catch(() => undefined);
-      setRemotePublicDecks((current) =>
-        current.filter((deck) => deck.catalogId !== catalogId),
-      );
-    }
-    setDecks((current) =>
-      current.filter((deck) => deck.id !== selectedDeck.id),
-    );
-    navigate({ name: "folder", folderId: selectedDeck.folderId });
-  };
-
-  const resolveStudyDecks = (target: StudyTarget) => {
-    if (target.kind === "all") return decks;
-    if (target.kind === "deck") {
-      const deck = decks.find((item) => item.id === target.id);
-      return deck ? [deck] : [];
-    }
-    if (target.kind === "folder") {
-      return decks.filter((deck) => deck.folderId === target.id);
-    }
-    const deck = publicCatalog.find((item) => item.catalogId === target.id);
-    return deck ? [deck] : [];
-  };
-
-  const openStudySetup = (target: StudyTarget, cardIds?: string[]) => {
-    const available = resolveStudyDecks(target).flatMap((deck) => deck.cards);
-    const requested = cardIds?.length
-      ? available.filter((card) => cardIds.includes(card.id))
-      : available;
-    if (!requested.length) return;
-    setStudyRequest({ target, cardIds });
-    setStudySettingsOpen(true);
-  };
-
-  const startStudy = (request: StudyRequest, order: StudyOrder) => {
-    const sourceDecks = resolveStudyDecks(request.target);
-    const baseQueue = request.cardIds?.length
-      ? request.cardIds
-      : sourceDecks.flatMap((deck) => deck.cards.map((card) => card.id));
-    const startIndex = request.startCardId
-      ? baseQueue.indexOf(request.startCardId)
-      : -1;
-    const originalQueue = startIndex > 0
-      ? [...baseQueue.slice(startIndex), ...baseQueue.slice(0, startIndex)]
-      : [...baseQueue];
-    if (!originalQueue.length) return;
-    const queue = order === "random"
-      ? request.startCardId && originalQueue[0] === request.startCardId
-        ? [originalQueue[0], ...originalQueue.slice(1).sort(() => Math.random() - 0.5)]
-        : [...originalQueue].sort(() => Math.random() - 0.5)
-      : [...originalQueue];
-    setStudy({
-      target: request.target,
-      queue,
-      originalQueue,
-      order,
-      index: 0,
-      known: 0,
-      wrong: [],
-      streak: 0,
-      bestStreak: 0,
-      points: 0,
-      direction: "front-first",
-      flipped: false,
-      complete: false,
-    });
-    setStudySettingsOpen(false);
-    navigate({ name: "study" });
-  };
-
-  const applyStudyOrder = (order: StudyOrder) => {
-    setStudy((current) => {
-      if (!current) return current;
-      const fixed = current.queue.slice(0, current.index + 1);
-      const fixedIds = new Set(fixed);
-      const remaining = current.originalQueue.filter((id) => !fixedIds.has(id));
-      const orderedRemaining = order === "random"
-        ? [...remaining].sort(() => Math.random() - 0.5)
-        : remaining;
-      return {
-        ...current,
+        missed: [],
+        streak: 0,
+        bestStreak: 0,
+        complete: false,
+        direction: sourceDecks[0].direction,
         order,
-        queue: [...fixed, ...orderedRemaining],
-      };
-    });
-    setStudySettingsOpen(false);
-  };
+        font: "current",
+        cardColor: sourceDecks[0].cardColorMode === "random"
+          ? cardColors[Math.floor(Math.random() * cardColors.length)]
+          : sourceDecks[0].cardColor ?? sourceDecks[0].color,
+      });
+      setStudyDays((current) => {
+        const today = localDayKey();
+        return current.includes(today) ? current : [...current, today];
+      });
+      setShowKeywords(false);
+      setStudySettingsOpen(false);
+    },
+    [studyLibrary],
+  );
 
-  const rateCard = useCallback(
-    (result: "known" | "missed") => {
-      if (!study || !study.flipped || study.complete) return;
-      const cardId = study.queue[study.index];
-      if (result === "known") {
-        const nextStreak = study.streak + 1;
-        setSettings((current) => ({
-          ...current,
-          bestStreak: Math.max(current.bestStreak ?? 0, nextStreak),
-        }));
-      }
-      if (study.target.kind !== "public") {
-        setDecks((current) =>
-          current.map((deck) => {
-            if (!deck.cards.some((card) => card.id === cardId)) return deck;
-            return {
-              ...deck,
-              lastStudied: Date.now(),
-              cards: deck.cards.map((card) =>
-                card.id === cardId
-                  ? { ...card, [result]: card[result] + 1 }
-                  : card,
-              ),
-            };
-          }),
-        );
+  const answerStudy = useCallback(
+    (known: boolean) => {
+      if (!studyEntry || !study) return;
+      const updateDeck = (deck: Deck) => deck.id !== studyEntry.deck.id
+        ? deck
+        : {
+            ...deck,
+            lastStudied: Date.now(),
+            cards: deck.cards.map((card) =>
+              card.id !== studyEntry.card.id
+                ? card
+                : { ...card, known: card.known + (known ? 1 : 0), missed: card.missed + (known ? 0 : 1) },
+            ),
+          };
+      if (studyEntry.deck.community) {
+        setPublicDecks((current) => current.map(updateDeck));
+        if (account && studyEntry.deck.publicId) {
+          void savePublicStudyResult(account.uid, studyEntry.deck.publicId, studyEntry.card.id, known).catch((error) => {
+            setAccountNotice(friendlyCloudError(error));
+            setCloudStatus("error");
+          });
+        }
+      } else {
+        setDecks((current) => current.map(updateDeck));
       }
       setStudy((current) => {
         if (!current) return current;
-        const isLast = current.index === current.queue.length - 1;
-        const nextStreak = result === "known" ? current.streak + 1 : 0;
-        const earnedPoints =
-          result === "known" ? 10 + current.streak * 2 : 0;
+        const nextStreak = known ? current.streak + 1 : 0;
+        const atEnd = current.index >= current.cardIds.length - 1;
         return {
           ...current,
-          known: current.known + (result === "known" ? 1 : 0),
-          wrong:
-            result === "missed" && !current.wrong.includes(cardId)
-              ? [...current.wrong, cardId]
-              : current.wrong,
+          index: atEnd ? current.index : current.index + 1,
+          flipped: false,
+          known: current.known + (known ? 1 : 0),
+          missed: known ? current.missed : [...current.missed, studyEntry.card.id],
           streak: nextStreak,
           bestStreak: Math.max(current.bestStreak, nextStreak),
-          points: current.points + earnedPoints,
-          index: isLast ? current.index : current.index + 1,
-          flipped: false,
-          complete: isLast,
+          complete: atEnd,
         };
       });
+      setShowKeywords(false);
     },
-    [study],
+    [study, studyEntry, account],
   );
 
+  const moveStudy = useCallback((delta: -1 | 1) => {
+    setStudy((current) => {
+      if (!current || current.complete) return current;
+      const nextIndex = Math.min(current.cardIds.length - 1, Math.max(0, current.index + delta));
+      if (nextIndex === current.index) return current;
+      return { ...current, index: nextIndex, flipped: false };
+    });
+    setShowKeywords(false);
+  }, []);
+
+  const toggleStudyPin = useCallback(() => {
+    if (!studyEntry) return;
+    setDecks((current) => current.map((deck) => deck.id !== studyEntry.deck.id ? deck : {
+      ...deck,
+      cards: deck.cards.map((card) => card.id === studyEntry.card.id ? { ...card, pinned: !card.pinned } : card),
+    }));
+  }, [studyEntry]);
+
+  const updateStudyPinComment = useCallback((pinComment: string) => {
+    if (!studyEntry) return;
+    setDecks((current) => current.map((deck) => deck.id !== studyEntry.deck.id ? deck : {
+      ...deck,
+      cards: deck.cards.map((card) => card.id === studyEntry.card.id ? { ...card, pinned: true, pinComment } : card),
+    }));
+  }, [studyEntry]);
+
+  const updateStudySettings = useCallback((changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => {
+    setStudy((current) => {
+      if (!current) return current;
+      const nextOrder = changes.order ?? current.order;
+      let nextIds = current.cardIds;
+      let nextIndex = current.index;
+      if (nextOrder !== current.order) {
+        const currentId = current.cardIds[current.index];
+        nextIds = current.deckIds.flatMap((deckId) => studyLibrary.find((deck) => deck.id === deckId)?.cards.map((card) => card.id) ?? []);
+        if (nextOrder === "random") nextIds = [...nextIds].sort(() => Math.random() - 0.5);
+        if (currentId && nextIds.includes(currentId)) nextIds = [currentId, ...nextIds.filter((id) => id !== currentId)];
+        nextIndex = 0;
+      }
+      return {
+        ...current,
+        ...changes,
+        order: nextOrder,
+        cardIds: nextIds,
+        index: nextIndex,
+        flipped: changes.direction && changes.direction !== current.direction ? false : current.flipped,
+      };
+    });
+    setShowKeywords(false);
+  }, [studyLibrary]);
+
   useEffect(() => {
-    if (
-      view.name !== "study" ||
-      !study ||
-      study.complete ||
-      studyCardEditId
-    )
-      return;
-    const handleKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (
-        target?.matches("input, textarea, select") ||
-        target?.isContentEditable
-      )
+    if (!study) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (studySettingsOpen) {
+        if (event.key === "Escape") setStudySettingsOpen(false);
         return;
+      }
+      if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']")) return;
       if (event.code === "Space") {
         event.preventDefault();
-        setStudy((current) =>
-          current ? { ...current, flipped: !current.flipped } : current,
-        );
+        if (event.repeat || spaceHoldTimer.current !== null) return;
+        spaceLongPress.current = false;
+        if (studyEntry && extractKeywords(studyEntry.card.back).length > 0) {
+          spaceHoldTimer.current = window.setTimeout(() => {
+            spaceLongPress.current = true;
+            setShowKeywords(true);
+          }, 420);
+        }
+        return;
       }
-      if (event.key === "0") {
-        event.preventDefault();
-        rateCard("missed");
+      if (event.repeat) return;
+      if (event.key === "1") { event.preventDefault(); answerStudy(true); }
+      if (event.key === "2") { event.preventDefault(); answerStudy(false); }
+      if (event.key === "3") { event.preventDefault(); toggleStudyPin(); }
+      if (event.key === "ArrowLeft") { event.preventDefault(); moveStudy(-1); }
+      if (event.key === "ArrowRight") { event.preventDefault(); moveStudy(1); }
+      if (event.key === "Escape") setStudy(null);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== "Space") return;
+      event.preventDefault();
+      if (spaceHoldTimer.current !== null) {
+        window.clearTimeout(spaceHoldTimer.current);
+        spaceHoldTimer.current = null;
       }
-      if (event.key === "1") {
+      if (spaceLongPress.current) {
+        setShowKeywords(false);
+      } else {
+        setStudy((current) => current ? { ...current, flipped: !current.flipped } : current);
+      }
+      spaceLongPress.current = false;
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      if (spaceHoldTimer.current !== null) {
+        window.clearTimeout(spaceHoldTimer.current);
+        spaceHoldTimer.current = null;
+      }
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [study, studyEntry, studySettingsOpen, answerStudy, moveStudy, toggleStudyPin]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (focus) setFocus(null);
+        if (breathing) setBreathing(null);
+      }
+      if (event.code === "Space" && focus) {
         event.preventDefault();
-        rateCard("known");
+        setTimerVisible((visible) => !visible);
       }
     };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [rateCard, study, studyCardEditId, view.name]);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [focus, breathing]);
 
-  const exportData = () => {
-    const blob = new Blob(
-      [JSON.stringify({ version: 3, folders, decks, settings }, null, 2)],
-      { type: "application/json" },
-    );
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `lume-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const importData = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const parsed = JSON.parse(await file.text());
-      if (!Array.isArray(parsed.decks)) throw new Error("invalid");
-      if (
-        window.confirm(
-          "Importare questo backup? Sostituirà cartelle e set presenti su questo dispositivo.",
-        )
-      ) {
-        setFolders(normalizeFolders(parsed.folders));
-        setDecks(normalizeDecks(parsed.decks));
-        if (parsed.settings) {
-          setSettings({
-            ...defaultSettings,
-            ...parsed.settings,
-            bestStreak:
-              typeof parsed.settings.bestStreak === "number"
-                ? parsed.settings.bestStreak
-                : 0,
-          });
-        }
-        navigate({ name: "home" });
-      }
-    } catch {
-      window.alert("Questo file non sembra un backup valido di Lume.");
+  const saveFolder = (data: Omit<Folder, "id" | "createdAt">, editId?: string) => {
+    if (editId) {
+      setFolders((current) => current.map((folder) => (folder.id === editId ? { ...folder, ...data } : folder)));
+    } else {
+      setFolders((current) => [...current, { ...data, id: makeId("folder"), createdAt: Date.now() }]);
     }
-    event.target.value = "";
+    setFolderCreator(null);
   };
+
+  const saveDeck = (data: Omit<Deck, "id" | "createdAt">, editId?: string) => {
+    if (editId) {
+      setDecks((current) => current.map((deck) => (deck.id === editId ? { ...deck, ...data } : deck)));
+    } else {
+      setDecks((current) => [...current, { ...data, id: makeId("deck"), createdAt: Date.now() }]);
+    }
+    setDeckCreator(null);
+  };
+
+  const completeDeckTransfer = (copy: boolean) => {
+    if (!deckTransfer) return;
+    const source = decks.find((deck) => deck.id === deckTransfer.deckId);
+    const target = folders.find((folder) => folder.id === deckTransfer.targetFolderId);
+    if (!source || !target) {
+      setDeckTransfer(null);
+      return;
+    }
+    if (copy) {
+      setDecks((current) => [...current, {
+        ...source,
+        id: makeId("deck"),
+        title: `${source.title} — copia`,
+        folderId: target.id,
+        color: target.color,
+        createdAt: Date.now(),
+        lastStudied: undefined,
+        cards: source.cards.map((card) => ({ ...card, id: makeId("card"), known: 0, missed: 0 })),
+      }]);
+    } else {
+      setDecks((current) => current.map((deck) => deck.id === source.id ? { ...deck, folderId: target.id, color: target.color } : deck));
+    }
+    setDeckTransfer(null);
+  };
+
+  const requestDeleteDecks = (deckIds: string[]) => {
+    if (!deckIds.length) return;
+    setDeleteRequest({ kind: "decks", title: deckIds.length === 1 ? "Eliminare questo set?" : `Eliminare ${deckIds.length} set?`, folderIds: [], deckIds, subfolderCount: 0, deckCount: deckIds.length });
+  };
+
+  const requestDeleteFolder = (folderId: string) => {
+    const ids = descendantFolderIds(folderId);
+    const nestedDeckIds = decks.filter((deck) => deck.folderId && ids.has(deck.folderId)).map((deck) => deck.id);
+    const parentId = folders.find((folder) => folder.id === folderId)?.parentId ?? null;
+    setDeleteRequest({ kind: "folder", title: parentId ? "Eliminare questa sottocartella?" : "Eliminare questa cartella?", folderIds: Array.from(ids), deckIds: nestedDeckIds, subfolderCount: ids.size - 1, deckCount: nestedDeckIds.length, returnFolderId: parentId });
+  };
+
+  const confirmDelete = () => {
+    if (!deleteRequest) return;
+    setDecks((current) => current.filter((deck) => !deleteRequest.deckIds.includes(deck.id)));
+    if (deleteRequest.folderIds.length) setFolders((current) => current.filter((folder) => !deleteRequest.folderIds.includes(folder.id)));
+    if (deleteRequest.kind === "folder") setView(deleteRequest.returnFolderId ? { name: "folder", id: deleteRequest.returnFolderId } : { name: "home" });
+    if (deleteRequest.kind === "decks" && view.name === "deck" && deleteRequest.deckIds.includes(view.id)) setView({ name: "home" });
+    setDeleteRequest(null);
+  };
+
+  const moveDecks = (deckIds: string[], folderId: string | null) => {
+    const target = folders.find((folder) => folder.id === folderId);
+    setDecks((current) => current.map((deck) => deckIds.includes(deck.id) ? { ...deck, folderId, color: target?.color ?? deck.color } : deck));
+    setBatchMove(null);
+  };
+
+  const moveFolder = (folderId: string, targetFolderId: string | null) => {
+    if (folderId === targetFolderId) return;
+    const blocked = descendantFolderIds(folderId);
+    if (targetFolderId && blocked.has(targetFolderId)) return;
+    setFolders((current) => current.map((folder) => folder.id === folderId ? { ...folder, parentId: targetFolderId } : folder));
+    if (targetFolderId) setExpanded((current) => new Set(current).add(targetFolderId));
+  };
+
+  const runAccountAction = async (action: () => Promise<unknown>, successMessage?: string) => {
+    setAccountBusy(true);
+    setAccountNotice("");
+    try {
+      await action();
+      if (successMessage) setAccountNotice(successMessage);
+    } catch (error) {
+      setAccountNotice(friendlyCloudError(error));
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const voteDeck = async (deckId: string, vote: -1 | 1 | 2) => {
+    const target = studyLibrary.find((deck) => deck.id === deckId);
+    if (!target) return;
+    if (!account) {
+      setAccountNotice("Accedi per votare e ritrovare la tua valutazione su ogni dispositivo.");
+      setPreferencesOpen(true);
+      return;
+    }
+    const previous = target.userVote ?? 0;
+    const next: PublicVote = previous === vote ? 0 : vote;
+    const setId = target.publicId ?? `${account.uid}_${target.id}`;
+    const updateVote = (deck: Deck) => deck.id === deckId
+      ? { ...deck, votes: (deck.votes ?? 0) - previous + next, userVote: next }
+      : deck;
+    setDecks((current) => current.map(updateVote));
+    setPublicDecks((current) => current.map(updateVote));
+    setVoteBusy(true);
+    try {
+      await setPublicVote(setId, account.uid, next);
+      await refreshPublicDecks(account.uid);
+    } catch (error) {
+      setAccountNotice(friendlyCloudError(error));
+      setPreferencesOpen(true);
+      setDecks((current) => current.map((deck) => deck.id === deckId ? { ...deck, votes: target.votes, userVote: previous } : deck));
+      setPublicDecks((current) => current.map((deck) => deck.id === deckId ? { ...deck, votes: target.votes, userVote: previous } : deck));
+    } finally {
+      setVoteBusy(false);
+    }
+  };
+
+  const currentFolder = view.name === "folder" ? folderById(view.id) : null;
+  const selectedDeck = view.name === "deck" ? studyLibrary.find((deck) => deck.id === view.id) : null;
+  const studyActive = Boolean(study);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [view, studyActive]);
+
+  if (focus) {
+    const elapsed = Math.max(0, (focus.pausedAt ?? clock) - focus.startedAt);
+    const remaining = Math.max(0, focus.duration - elapsed);
+    return (
+      <FocusScreen
+        remaining={remaining}
+        duration={focus.duration}
+        visible={timerVisible}
+        paused={Boolean(focus.pausedAt)}
+        finished={Boolean(focus.finishedAt)}
+        onPause={() =>
+          setFocus((current) => {
+            if (!current || current.finishedAt) return current;
+            if (current.pausedAt) {
+              const pausedFor = Date.now() - current.pausedAt;
+              return { ...current, startedAt: current.startedAt + pausedFor, pausedAt: undefined };
+            }
+            return { ...current, pausedAt: Date.now() };
+          })
+        }
+        onExit={() => setFocus(null)}
+      />
+    );
+  }
+
+  if (breathing) {
+    const elapsed = clock - breathing.startedAt;
+    return <BreathingScreen elapsed={elapsed} onExit={() => setBreathing(null)} />;
+  }
+
+  if (study) {
+    return (
+      <StudyScreen
+        theme={theme}
+        state={study}
+        entry={studyEntry}
+        showKeywords={showKeywords}
+        settingsOpen={studySettingsOpen}
+        onFlip={() => setStudy((current) => (current ? { ...current, flipped: !current.flipped } : current))}
+        onKnow={() => answerStudy(true)}
+        onMiss={() => answerStudy(false)}
+        onPrevious={() => moveStudy(-1)}
+        onNext={() => moveStudy(1)}
+        onPin={toggleStudyPin}
+        onPinComment={updateStudyPinComment}
+        onOpenSettings={() => setStudySettingsOpen(true)}
+        onCloseSettings={() => setStudySettingsOpen(false)}
+        onSettingsChange={updateStudySettings}
+        onKeywords={() => {
+          setShowKeywords(true);
+          window.setTimeout(() => setShowKeywords(false), 3000);
+        }}
+        onRestartMissed={() => {
+          if (!study.missed.length) return;
+          setStudy({ ...study, cardIds: study.missed, index: 0, flipped: false, known: 0, missed: [], streak: 0, complete: false });
+        }}
+        onExit={() => {
+          setStudySettingsOpen(false);
+          setStudy(null);
+        }}
+      />
+    );
+  }
 
   return (
-    <div className="app-shell">
+    <div className="lume-app" style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
       <Sidebar
+        theme={theme}
         view={view}
-        study={study}
         folders={folders}
         decks={decks}
-        onNavigate={navigate}
-        onCreateFolder={openCreateFolder}
-        onCreateSet={(folderId) => openCreateDeck(folderId)}
+        expanded={expanded}
+        onToggle={(id) =>
+          setExpanded((current) => {
+            const next = new Set(current);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+          })
+        }
+        onNavigate={setView}
+        onCreate={() => setCreateMenu((open) => !open)}
+        onTheme={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
+        onPreferences={() => setPreferencesOpen(true)}
+        onMoveDeck={(deckId, folderId) => moveDecks([deckId], folderId)}
+        onMoveDecks={moveDecks}
+        onMoveFolder={moveFolder}
+        onResize={setSidebarWidth}
       />
 
-      <div className="main-column">
+      <div className="app-main">
         <Topbar
-          theme={settings.theme}
-          font={settings.font}
-          userEmail={user?.email ?? undefined}
-          soundMode={soundMode}
-          soundPanelOpen={soundPanelOpen}
-          lumePanelOpen={lumePanelOpen}
-          onToggleTheme={() =>
-            setSettings((current) => ({
-              ...current,
-              theme: current.theme === "light" ? "dark" : "light",
-            }))
-          }
-          onFontChange={(font) =>
-            setSettings((current) => ({ ...current, font }))
-          }
-          onToggleSound={() => {
-            setSoundPanelOpen((open) => !open);
-            setLumePanelOpen(false);
-          }}
-          onToggleLume={() => {
-            setLumePanelOpen((open) => !open);
-            setSoundPanelOpen(false);
-          }}
-          onStartBreathing={() => {
-            setLumePanelOpen(false);
-            setSoundPanelOpen(false);
-            setLumeSession({
-              kind: "breathing",
-              startedAt: Date.now(),
-              automatic: false,
-            });
-          }}
-          onOpenAccount={() => {
-            setAuthMessage("");
-            setAccountOpen(true);
-          }}
+          onHome={() => setView({ name: "home" })}
+          onFocus={() => setFocusSetup(true)}
+          onBreathe={() => setBreathing({ startedAt: Date.now() })}
+          onPreferences={() => setPreferencesOpen(true)}
         />
 
-        {soundPanelOpen && (
-          <SoundPanel
-            mode={soundMode}
-            volume={settings.volume}
-            onSelect={playSound}
-            onVolume={(volume) =>
-              setSettings((current) => ({ ...current, volume }))
-            }
-            onClose={() => setSoundPanelOpen(false)}
-          />
-        )}
-
-        {lumePanelOpen && (
-          <LumePanel
-            minutes={settings.focusMinutes}
-            onMinutes={(focusMinutes) =>
-              setSettings((current) => ({ ...current, focusMinutes }))
-            }
-            onStartFocus={() => {
-              setLumePanelOpen(false);
-              setLumeSession({
-                kind: "focus",
-                durationMs: settings.focusMinutes * 60_000,
-                startedAt: Date.now(),
-              });
-            }}
-            onStartBreathing={() => {
-              setLumePanelOpen(false);
-              setLumeSession({
-                kind: "breathing",
-                startedAt: Date.now(),
-                automatic: false,
-              });
-            }}
-            onClose={() => setLumePanelOpen(false)}
-          />
-        )}
-
-        <main className="page-content">
+        <main className="app-content">
           {view.name === "home" && (
-            <Dashboard
+            <Home
               folders={folders}
               decks={decks}
+              resumeDeck={resumeDeck}
+              randomEntry={randomEntry}
+              randomFlipped={randomFlipped}
+              mastery={mastery}
+              due={due}
               totalCards={totalCards}
-              dueCards={dueCards}
-              mastery={overallMastery}
-              focusMinutes={settings.focusMinutes}
-              bestStreak={settings.bestStreak}
-              onOpenFolder={(folderId) => navigate({ name: "folder", folderId })}
-              onStudy={(deck) => openStudySetup({ kind: "deck", id: deck.id })}
-              onContinueCard={(deckId, cardId) =>
-                startStudy(
-                  {
-                    target: { kind: "deck", id: deckId },
-                    startCardId: cardId,
-                  },
-                  "sequential",
-                )
-              }
-              onCreate={() => openCreateDeck(folders[0]?.id)}
-              onCreateFolder={openCreateFolder}
-              onOpenFocus={() => {
-                setSoundPanelOpen(false);
-                setLumePanelOpen(true);
+              studyDayStreak={studyDayStreak}
+              focusMinutes={focusMinutes}
+              onOpenFolder={(id) => setView({ name: "folder", id })}
+              onOpenDeck={(id) => setView({ name: "deck", id })}
+              onRandom={() => {
+                setRandomKey((key) => key + 1);
+                setRandomFlipped(false);
               }}
-              onReviewDue={() => {
-                const difficult = decks
-                  .flatMap((deck) => deck.cards)
-                  .filter((card) => card.missed > card.known)
-                  .map((card) => card.id);
-                openStudySetup({ kind: "all", id: "due" }, difficult);
+              onFlipRandom={() => setRandomFlipped((flipped) => !flipped)}
+              onStudyRandom={() => randomEntry && startStudy([randomEntry.deck.id], randomEntry.card.id)}
+              onResume={() => resumeDeck && startStudy([resumeDeck.id])}
+              onFocus={() => {
+                setFocus({ startedAt: Date.now(), duration: focusMinutes * 60000 });
+                setTimerVisible(true);
               }}
-              onViewAll={() => navigate({ name: "library" })}
+              onReview={() => {
+                const reviewDecks = decks.filter((deck) => deck.cards.some((card) => card.missed > card.known / 2));
+                if (reviewDecks.length) startStudy(reviewDecks.map((deck) => deck.id));
+              }}
+              onCreateFolder={() => setFolderCreator({ parentId: null })}
             />
           )}
 
-          {view.name === "library" && (
+          {view.name === "folders" && (
             <FolderLibrary
               folders={folders}
               decks={decks}
-              onOpenFolder={(folderId) => navigate({ name: "folder", folderId })}
-              onCreate={openCreateFolder}
+              onOpen={(id) => setView({ name: "folder", id })}
+              onCreate={() => setFolderCreator({ parentId: null })}
             />
           )}
 
-          {view.name === "community" && (
-            <CommunityPage
-              decks={publicCatalog}
-              userId={authUserId}
-              firebaseReady={firebaseConfigured}
-              onRefresh={() => void refreshCommunity()}
-              onStudy={(catalogId) => openStudySetup({ kind: "public", id: catalogId })}
+          {view.name === "explore" && (
+            <Explore
+              search={search}
+              onSearch={setSearch}
+              decks={exploreDecks}
+              cloudStatus={cloudStatus}
+              onOpen={(id) => setView({ name: "deck", id })}
             />
           )}
 
-          {view.name === "folder" && selectedFolder && (
-            <FolderPage
-              folder={selectedFolder}
-              decks={decks.filter((deck) => deck.folderId === selectedFolder.id)}
-              onBack={() => navigate({ name: "home" })}
-              onOpenDeck={(deckId) => navigate({ name: "deck", deckId })}
-              onCreateSet={() => openCreateDeck(selectedFolder.id)}
-              onStudyFolder={() => openStudySetup({ kind: "folder", id: selectedFolder.id })}
-              onEditFolder={() => {
-                setEditingFolderId(selectedFolder.id);
-                setFolderModalOpen(true);
+          {currentFolder && (
+            <FolderView
+              folder={currentFolder}
+              ancestors={folderAncestors(currentFolder.id)}
+              childFolders={folders.filter((folder) => folder.parentId === currentFolder.id)}
+              decks={decks.filter((deck) => deck.folderId === currentFolder.id)}
+              allDecks={decks}
+              descendantIds={descendantFolderIds(currentFolder.id)}
+              onHome={() => setView({ name: "home" })}
+              onOpenFolder={(id) => setView({ name: "folder", id })}
+              onOpenDeck={(id) => setView({ name: "deck", id })}
+              onCreateFolder={() => setFolderCreator({ parentId: currentFolder.id })}
+              onCreateDeck={() => setDeckCreator({ folderId: currentFolder.id })}
+              onEdit={() => setFolderCreator({ parentId: currentFolder.parentId, editId: currentFolder.id })}
+              onDeleteFolder={() => requestDeleteFolder(currentFolder.id)}
+              onDeleteDecks={requestDeleteDecks}
+              onMoveDecks={(ids) => setBatchMove(ids)}
+              onRequestTransfer={(deckId, targetFolderId) => setDeckTransfer({ deckId, targetFolderId })}
+              onStudy={() => {
+                const ids = descendantFolderIds(currentFolder.id);
+                startStudy(decks.filter((deck) => deck.folderId && ids.has(deck.folderId)).map((deck) => deck.id));
               }}
             />
           )}
 
-          {view.name === "deck" && selectedDeck && (
-            <DeckDetail
+          {selectedDeck && (
+            <DeckView
               deck={selectedDeck}
-              onBack={() => navigate({ name: "folder", folderId: selectedDeck.folderId })}
-              onAddCards={() => setCardModalOpen(true)}
-              onImport={openImportForSelectedDeck}
-              onStudy={() => openStudySetup({ kind: "deck", id: selectedDeck.id })}
-              onReview={() => {
-                const difficult = selectedDeck.cards
-                  .filter((card) => card.missed > 0)
-                  .map((card) => card.id);
-                openStudySetup({ kind: "deck", id: selectedDeck.id }, difficult);
-              }}
-              onEdit={() => {
-                setEditingDeckId(selectedDeck.id);
-                setDeckModalOpen(true);
-              }}
-              onDelete={removeDeck}
-              onDeleteCard={removeCard}
-            />
-          )}
-
-          {view.name === "study" && studyDisplayDeck && study && currentStudyCardId && (
-            <StudyView
-              deck={studyDisplayDeck}
-              card={studyDisplayDeck.cards.find((item) => item.id === currentStudyCardId)}
-              keywordHelp={Boolean(currentStudyOwnerDeck?.keywordHelp)}
-              canEdit={Boolean(currentStudyOwnerDeck && !("catalogId" in currentStudyOwnerDeck))}
-              study={study}
-              onFlip={() =>
-                setStudy((current) =>
-                  current ? { ...current, flipped: !current.flipped } : current,
-                )
-              }
-              onRate={rateCard}
-              onEditCard={() =>
-                setStudyCardEditId(study.queue[study.index])
-              }
-              onOpenSettings={() => {
-                setStudyRequest({ target: study.target });
-                setStudySettingsOpen(true);
-              }}
-              onToggleDirection={() =>
-                setStudy((current) =>
-                  current
-                    ? {
-                        ...current,
-                        direction:
-                          current.direction === "front-first"
-                            ? "back-first"
-                            : "front-first",
-                        flipped: false,
-                      }
-                    : current,
-                )
-              }
-              onExit={() => {
-                if (study.target.kind === "deck") navigate({ name: "deck", deckId: study.target.id });
-                else if (study.target.kind === "folder") navigate({ name: "folder", folderId: study.target.id });
-                else if (study.target.kind === "public") navigate({ name: "community" });
-                else navigate({ name: "home" });
-              }}
-              onReviewWrong={() => openStudySetup(study.target, study.wrong)}
-              onRestart={() => openStudySetup(study.target)}
+              folder={selectedDeck.community ? undefined : folderById(selectedDeck.folderId)}
+              publicEffective={selectedDeck.community || deckIsPublic(selectedDeck)}
+              readOnly={Boolean(selectedDeck.community)}
+              voteBusy={voteBusy}
+              onBack={() => selectedDeck.community ? setView({ name: "explore" }) : selectedDeck.folderId ? setView({ name: "folder", id: selectedDeck.folderId }) : setView({ name: "home" })}
+              onStudy={() => startStudy([selectedDeck.id])}
+              onEdit={() => setDeckCreator({ folderId: selectedDeck.folderId, editId: selectedDeck.id })}
+              onDelete={() => requestDeleteDecks([selectedDeck.id])}
+              onVote={(vote) => { void voteDeck(selectedDeck.id, vote); }}
             />
           )}
         </main>
 
         <MobileNav
           view={view}
-          onNavigate={navigate}
-          hasFolders={folders.length > 0}
-          onCreateFolder={openCreateFolder}
-          onCreateSet={() => openCreateDeck(selectedFolder?.id ?? folders[0]?.id)}
+          onHome={() => setView({ name: "home" })}
+          onFolders={() => setView({ name: "folders" })}
+          onExplore={() => setView({ name: "explore" })}
+          onCreate={() => setCreateMenu((open) => !open)}
         />
       </div>
 
-      {welcomeOpen && (
-        <WelcomeModal
-          userEmail={user?.email ?? undefined}
-          authResolved={authResolved}
-          onOpenAccount={() => {
-            setWelcomeOpen(false);
-            setAuthMessage("");
-            setAccountOpen(true);
+      {createMenu && (
+        <CreateMenu
+          onClose={() => setCreateMenu(false)}
+          onFolder={() => {
+            setFolderCreator({ parentId: view.name === "folder" ? view.id : null });
+            setCreateMenu(false);
           }}
-          onOpenWorkspace={() => {
-            navigate({ name: "home" });
-            setWelcomeOpen(false);
+          onDeck={() => {
+            setDeckCreator({ folderId: view.name === "folder" ? view.id : null });
+            setCreateMenu(false);
           }}
-          onClose={() => setWelcomeOpen(false)}
         />
       )}
 
-      {deckModalOpen && (
-        <DeckModal
-          deck={decks.find((deck) => deck.id === editingDeckId)}
+      {folderCreator && (
+        <FolderCreator
+          folder={folderCreator.editId ? folders.find((folder) => folder.id === folderCreator.editId) : undefined}
           folders={folders}
-          defaultFolderId={draftFolderId || folders[0]?.id || DEFAULT_FOLDER_ID}
-          defaultFont={settings.font}
-          onSave={saveDeck}
-          onClose={() => setDeckModalOpen(false)}
-        />
-      )}
-
-      {folderModalOpen && (
-        <FolderModal
-          folder={folders.find((folder) => folder.id === editingFolderId)}
+          defaultParentId={folderCreator.parentId}
+          parentPublic={folderIsPublic}
           onSave={saveFolder}
-          onClose={() => setFolderModalOpen(false)}
+          onClose={() => setFolderCreator(null)}
         />
       )}
 
-      {studySettingsOpen && studyRequest && (
-        <StudySettingsModal
-          request={studyRequest}
-          title={
-            studyRequest.target.kind === "all"
-              ? "Carte da rivedere"
-              : studyRequest.target.kind === "folder"
-              ? folders.find((folder) => folder.id === studyRequest.target.id)?.title ?? "Cartella"
-              : studyRequest.target.kind === "public"
-                ? publicCatalog.find((deck) => deck.catalogId === studyRequest.target.id)?.title ?? "Set pubblico"
-                : decks.find((deck) => deck.id === studyRequest.target.id)?.title ?? "Set"
-          }
-          cardCount={
-            studyRequest.cardIds?.length ??
-            resolveStudyDecks(studyRequest.target).reduce((sum, deck) => sum + deck.cards.length, 0)
-          }
-          activeOrder={view.name === "study" ? study?.order : undefined}
-          onStart={(order) =>
-            view.name === "study" ? applyStudyOrder(order) : startStudy(studyRequest, order)
-          }
-          onClose={() => setStudySettingsOpen(false)}
+      {deckCreator && (
+        <DeckCreator
+          deck={deckCreator.editId ? decks.find((deck) => deck.id === deckCreator.editId) : undefined}
+          folders={folders}
+          defaultFolderId={deckCreator.folderId}
+          folderPublic={folderIsPublic}
+          theme={theme}
+          onSave={saveDeck}
+          onClose={() => setDeckCreator(null)}
         />
       )}
 
-      {cardModalOpen && selectedDeck && (
-        <CardModal
-          deck={selectedDeck}
-          onSave={saveCards}
-          onImport={openImportForSelectedDeck}
-          onClose={() => setCardModalOpen(false)}
+      {preferencesOpen && (
+        <Preferences
+          theme={theme}
+          account={account}
+          cloudStatus={cloudStatus}
+          busy={accountBusy}
+          notice={accountNotice}
+          onTheme={setTheme}
+          onGoogle={() => runAccountAction(async () => setAccount(await loginWithGoogle()))}
+          onEmailLogin={(email, password) => runAccountAction(async () => setAccount(await loginWithEmail(email, password)))}
+          onEmailRegister={(name, email, password) => runAccountAction(async () => setAccount(await registerWithEmail(name, email, password)))}
+          onPasswordReset={(email) => runAccountAction(() => resetAccountPassword(email), "Ti abbiamo inviato l’email per scegliere una nuova password.")}
+          onLogout={() => runAccountAction(() => logoutAccount(), "Sei uscita dall’account. I dati online restano al sicuro.")}
+          onClose={() => setPreferencesOpen(false)}
         />
       )}
 
-      {studyCardEditId && editingStudyCard && (
-        <StudyCardEditModal
-          card={editingStudyCard}
-          keywordHelp={Boolean(currentStudyOwnerDeck?.keywordHelp)}
-          onSave={(front, back) =>
-            saveStudyCard(editingStudyCard.id, front, back)
-          }
-          onClose={() => setStudyCardEditId(undefined)}
+      {focusSetup && (
+        <FocusSetup
+          minutes={focusMinutes}
+          onMinutes={setFocusMinutes}
+          onClose={() => setFocusSetup(false)}
+          onStart={() => {
+            setFocus({ startedAt: Date.now(), duration: focusMinutes * 60000 });
+            setTimerVisible(true);
+            setFocusSetup(false);
+          }}
         />
       )}
 
-      {importModalOpen && selectedDeck && (
-        <ImportModal
-          deck={selectedDeck}
-          onImport={saveImportedCards}
-          onClose={() => setImportModalOpen(false)}
+      {deckTransfer && (
+        <DeckTransferModal
+          deck={decks.find((deck) => deck.id === deckTransfer.deckId)}
+          folder={folders.find((folder) => folder.id === deckTransfer.targetFolderId)}
+          onMove={() => completeDeckTransfer(false)}
+          onCopy={() => completeDeckTransfer(true)}
+          onClose={() => setDeckTransfer(null)}
         />
       )}
-
-      {accountOpen && (
-        <AccountModal
-          user={user}
-          settings={settings}
-          configured={firebaseConfigured}
-          message={authMessage}
-          onSettingsChange={setSettings}
-          onExport={exportData}
-          onImport={() => {
-            setAccountOpen(false);
-            fileInputRef.current?.click();
-          }}
-          onStartBreathing={() => {
-            setAccountOpen(false);
-            setLumeSession({
-              kind: "breathing",
-              startedAt: Date.now(),
-              automatic: false,
-            });
-          }}
-          onEmail={async (email) => {
-            if (!firebaseAuth) {
-              setAuthMessage(
-                "Per attivare l’accesso online dobbiamo completare il collegamento Firebase.",
-              );
-              return;
-            }
-            try {
-              await setPersistence(firebaseAuth, browserLocalPersistence);
-              await sendSignInLinkToEmail(firebaseAuth, email, {
-                url: window.location.href,
-                handleCodeInApp: true,
-              });
-              localStorage.setItem(AUTH_EMAIL_KEY, email);
-              setAuthMessage(
-                "Ti abbiamo inviato un link di accesso. Controlla la tua email.",
-              );
-            } catch (error) {
-              setAuthMessage(
-                error instanceof Error ? error.message : "Invio non riuscito.",
-              );
-            }
-          }}
-          onGoogle={async () => {
-            if (!firebaseAuth) {
-              setAuthMessage(
-                "Per attivare Google dobbiamo completare il collegamento Firebase.",
-              );
-              return;
-            }
-            try {
-              await setPersistence(firebaseAuth, browserLocalPersistence);
-              await signInWithPopup(firebaseAuth, new GoogleAuthProvider());
-            } catch (error) {
-              setAuthMessage(
-                error instanceof Error ? error.message : "Accesso non riuscito.",
-              );
-            }
-          }}
-          onLogout={async () => {
-            if (firebaseAuth) await signOut(firebaseAuth);
-            setUser(null);
-            setAccountOpen(false);
-          }}
-          onContinueLocal={() => {
-            setAuthMessage("");
-            setAccountOpen(false);
-          }}
-          onClose={() => setAccountOpen(false)}
-        />
-      )}
-
-      {lumeSession && (
-        <LumeStandby
-          session={lumeSession}
-          onClose={() => setLumeSession(undefined)}
-        />
-      )}
-
-      <input
-        ref={fileInputRef}
-        className="sr-only"
-        type="file"
-        accept="application/json"
-        onChange={importData}
-        aria-label="Importa backup"
-      />
-    </div>
-  );
-}
-
-function Brand() {
-  return (
-    <button
-      className="brand"
-      type="button"
-      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-      aria-label="Lume, torna all’inizio"
-    >
-      <span className="brand-mark" aria-hidden="true">
-        <span>L</span>
-      </span>
-      <span>Lume</span>
-    </button>
-  );
-}
-
-function RichText({ value, className = "" }: { value: string; className?: string }) {
-  return (
-    <span
-      className={className}
-      dangerouslySetInnerHTML={{ __html: sanitizeRichText(value) }}
-    />
-  );
-}
-
-function WelcomeModal({
-  userEmail,
-  authResolved,
-  onOpenAccount,
-  onOpenWorkspace,
-  onClose,
-}: {
-  userEmail?: string;
-  authResolved: boolean;
-  onOpenAccount: () => void;
-  onOpenWorkspace: () => void;
-  onClose: () => void;
-}) {
-  useEscape(onClose);
-
-  return (
-    <div
-      className="modal-backdrop welcome-backdrop"
-      role="presentation"
-      onMouseDown={onClose}
-    >
-      <section
-        className="welcome-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="welcome-modal-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <button
-          className="modal-close welcome-modal-close"
-          type="button"
-          onClick={onClose}
-          aria-label="Chiudi"
-        >
-          ×
-        </button>
-
-        <div className="welcome-modal-copy">
-          <span className="eyebrow">Lume / flashcards</span>
-          <h2 id="welcome-modal-title">
-            <span>Flashcards.</span>
-            <span className="welcome-unlimited">Unlimited learning.</span>
-            <em>Free.</em>
-          </h2>
-          <p>
-            Organizza i set nelle tue cartelle, scrivi le domande e concentra il
-            ripasso sulle carte che conosci meno.
-          </p>
-
-          <div className="welcome-entry-actions">
-            {userEmail ? (
-              <div
-                className="welcome-entry-button account-entry-button connected-account"
-                aria-label={`Account collegato: ${userEmail}`}
-              >
-                <span>Account collegato</span>
-                <strong>{userEmail}</strong>
-                <small>I tuoi set vengono salvati nel profilo</small>
-              </div>
-            ) : (
-              <button
-                className="welcome-entry-button account-entry-button"
-                type="button"
-                onClick={onOpenAccount}
-                disabled={!authResolved}
-              >
-                <span>Salva il tuo studio</span>
-                <strong>{authResolved ? "Fai il login" : "Controllo accesso…"}</strong>
-                <small>Fai il login per salvare i tuoi set</small>
-              </button>
-            )}
-            <button
-              className="welcome-entry-button workspace-entry-button"
-              type="button"
-              onClick={onOpenWorkspace}
-            >
-              <span>Il mio spazio</span>
-              <strong>Le tue flashcards</strong>
-              <small>Apri cartelle e set <b aria-hidden="true">→</b></small>
-            </button>
-          </div>
-        </div>
-
-        <div className="editorial-board welcome-board" aria-hidden="true">
-          <div className="board-bar">
-            <span>STUDY FILE / 001</span><i /><i /><i />
-          </div>
-          <div className="board-grid">
-            <div className="board-index"><span>01</span><strong>QUESTION</strong></div>
-            <div className="board-question">Che cosa vuoi<br />ricordare oggi?</div>
-            <div className="board-note">Ripassa ciò che non sai.<br />Il resto può aspettare.</div>
-            <div className="board-tab">REVIEW</div>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function RichTextEditor({
-  value,
-  onChange,
-  label,
-  placeholder,
-  autoFocus = false,
-  keywordHelp = false,
-  inputRef,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  label: string;
-  placeholder: string;
-  autoFocus?: boolean;
-  keywordHelp?: boolean;
-  inputRef?: (node: HTMLDivElement | null) => void;
-}) {
-  const editorRef = useRef<HTMLDivElement>(null);
-  const [initialValue] = useState(() => sanitizeRichText(value));
-
-  useEffect(() => {
-    if (!editorRef.current) return;
-    editorRef.current.innerHTML = initialValue;
-    if (autoFocus) editorRef.current.focus();
-  }, [autoFocus, initialValue]);
-
-  const applyFormat = (command: "bold" | "italic" | "underline") => {
-    editorRef.current?.focus();
-    document.execCommand(command);
-    if (editorRef.current) onChange(sanitizeRichText(editorRef.current.innerHTML));
-  };
-
-  return (
-    <div className="rich-field">
-      <span>{label}</span>
-      <div className="rich-editor-shell">
-        <div className="rich-toolbar" aria-label={`Formattazione ${label}`}>
-          <button
-            className={keywordHelp ? "keyword-format" : ""}
-            type="button"
-            tabIndex={-1}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              applyFormat("bold");
-            }}
-            aria-label={keywordHelp ? "Neretto e keyword" : "Neretto"}
-            title={keywordHelp ? "Neretto · diventa una keyword" : "Neretto"}
-          ><strong>B</strong></button>
-          <button
-            type="button"
-            tabIndex={-1}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              applyFormat("italic");
-            }}
-            aria-label="Corsivo"
-            title="Corsivo"
-          ><em>I</em></button>
-          <button
-            type="button"
-            tabIndex={-1}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              applyFormat("underline");
-            }}
-            aria-label="Sottolineato"
-            title="Sottolineato"
-          ><u>U</u></button>
-          {keywordHelp && <small>Il neretto identifica le keywords</small>}
-        </div>
-        <div
-          ref={(node) => {
-            editorRef.current = node;
-            inputRef?.(node);
-          }}
-          className="rich-editor"
-          contentEditable
-          tabIndex={0}
-          suppressContentEditableWarning
-          role="textbox"
-          aria-label={label}
-          aria-multiline="true"
-          data-placeholder={placeholder}
-          autoFocus={autoFocus}
-          onInput={(event) => onChange(sanitizeRichText(event.currentTarget.innerHTML))}
-          onBlur={(event) => onChange(sanitizeRichText(event.currentTarget.innerHTML))}
-        />
-      </div>
+      {batchMove && <FolderPickerModal folders={folders} onSelect={(folderId) => moveDecks(batchMove, folderId)} onClose={() => setBatchMove(null)} />}
+      {deleteRequest && <DeleteConfirmModal request={deleteRequest} onConfirm={confirmDelete} onClose={() => setDeleteRequest(null)} />}
     </div>
   );
 }
 
 function Sidebar({
+  theme,
   view,
-  study,
   folders,
   decks,
+  expanded,
+  onToggle,
   onNavigate,
-  onCreateFolder,
-  onCreateSet,
+  onCreate,
+  onTheme,
+  onPreferences,
+  onMoveDeck,
+  onMoveDecks,
+  onMoveFolder,
+  onResize,
 }: {
+  theme: "light" | "dark";
   view: View;
-  study?: StudySession;
   folders: Folder[];
   decks: Deck[];
+  expanded: Set<string>;
+  onToggle: (id: string) => void;
   onNavigate: (view: View) => void;
-  onCreateFolder: () => void;
-  onCreateSet: (folderId: string) => void;
+  onCreate: () => void;
+  onTheme: () => void;
+  onPreferences: () => void;
+  onMoveDeck: (deckId: string, folderId: string | null) => void;
+  onMoveDecks: (deckIds: string[], folderId: string | null) => void;
+  onMoveFolder: (folderId: string, targetFolderId: string | null) => void;
+  onResize: (width: number) => void;
 }) {
-  const activeFolderId =
-    view.name === "folder"
-      ? view.folderId
-      : view.name === "deck"
-        ? decks.find((deck) => deck.id === view.deckId)?.folderId
-        : view.name === "study" && study?.target.kind === "folder"
-          ? study.target.id
-          : view.name === "study" && study?.target.kind === "deck"
-            ? decks.find((deck) => deck.id === study.target.id)?.folderId
-        : undefined;
-  const activeDeckId =
-    view.name === "deck"
-      ? view.deckId
-      : view.name === "study" && study?.target.kind === "deck"
-        ? study.target.id
-        : undefined;
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
-    () => new Set([activeFolderId ?? folders[0]?.id].filter(Boolean) as string[]),
-  );
-  const [createMenuOpen, setCreateMenuOpen] = useState(false);
-
-  const toggleFolder = (folderId: string) => {
-    setExpandedFolders((current) => {
-      const next = new Set(current);
-      if (next.has(folderId)) next.delete(folderId);
-      else next.add(folderId);
-      return next;
-    });
+  const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined);
+  const [resizing, setResizing] = useState(false);
+  useEffect(() => {
+    if (!resizing) return;
+    const move = (event: PointerEvent) => onResize(Math.min(window.innerWidth / 3, Math.max(210, event.clientX)));
+    const stop = () => setResizing(false);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+  }, [resizing, onResize]);
+  const dropInto = (event: React.DragEvent, folderId: string | null) => {
+    event.preventDefault();
+    const groupedDecks = event.dataTransfer.getData("application/x-lume-decks");
+    const deckId = event.dataTransfer.getData("application/x-lume-deck");
+    const draggedFolderId = event.dataTransfer.getData("application/x-lume-folder");
+    if (groupedDecks) {
+      try { onMoveDecks(JSON.parse(groupedDecks) as string[], folderId); } catch { /* Ignore invalid drag data. */ }
+    } else if (deckId) onMoveDeck(deckId, folderId);
+    if (draggedFolderId) onMoveFolder(draggedFolderId, folderId);
+    setDropTarget(undefined);
   };
-
-  return (
-    <aside className="sidebar">
-      <Brand />
-      <nav className="side-nav" aria-label="Navigazione principale">
-        <button
-          className={view.name === "home" || view.name === "library" ? "active" : ""}
-          onClick={() => onNavigate({ name: "home" })}
-          type="button"
-        >
-          <span aria-hidden="true">⌂</span> Il mio spazio
-        </button>
-        <button
-          className={view.name === "community" ? "active" : ""}
-          onClick={() => onNavigate({ name: "community" })}
-          type="button"
-        >
-          <span aria-hidden="true">⌕</span>
-          <span><strong>Esplora</strong><small>Flashcard pubbliche</small></span>
-        </button>
-      </nav>
-
-      <div className="sidebar-folder-section">
-        <div className="sidebar-section-heading">
-          <span>Le mie cartelle</span>
-          <button
-            type="button"
-            onClick={() => setCreateMenuOpen((open) => !open)}
-            aria-label="Crea cartella o set"
-            aria-expanded={createMenuOpen}
-          >＋</button>
-          {createMenuOpen && (
-            <div className="sidebar-create-menu">
-              <button
-                type="button"
-                onClick={() => {
-                  setCreateMenuOpen(false);
-                  onCreateFolder();
-                }}
-              >
-                <i aria-hidden="true" />
-                <span><strong>Nuova cartella</strong><small>Raccogli più set</small></span>
-              </button>
-              <button
-                type="button"
-                disabled={!folders.length}
-                onClick={() => {
-                  if (!folders[0]) return;
-                  setCreateMenuOpen(false);
-                  onCreateSet(activeFolderId ?? folders[0].id);
-                }}
-              >
-                <b aria-hidden="true">Aa</b>
-                <span><strong>Nuovo set</strong><small>Dentro una cartella</small></span>
+  const renderTree = (parentId: string | null, depth = 0): React.ReactNode =>
+    folders
+      .filter((folder) => folder.parentId === parentId)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((folder) => {
+        const children = folders.some((item) => item.parentId === folder.id) || decks.some((deck) => deck.folderId === folder.id);
+        const open = expanded.has(folder.id);
+        return (
+          <div className="tree-group" key={folder.id}>
+            <div className={`${view.name === "folder" && view.id === folder.id ? "tree-row active" : "tree-row"}${dropTarget === folder.id ? " drop-target" : ""}`} style={{ "--depth": depth } as React.CSSProperties} onDragOver={(event) => { event.preventDefault(); setDropTarget(folder.id); }} onDragLeave={() => setDropTarget(undefined)} onDrop={(event) => dropInto(event, folder.id)}>
+              <button className={open ? "tree-chevron open" : "tree-chevron"} type="button" disabled={!children} onClick={() => onToggle(folder.id)} aria-label={open ? "Chiudi cartella" : "Apri cartella"}>{children ? "›" : ""}</button>
+              <button className="tree-folder" title={folder.title} type="button" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-lume-folder", folder.id); }} onClick={() => { if (children && !open) onToggle(folder.id); onNavigate({ name: "folder", id: folder.id }); }}>
+                <i style={{ "--folder": folder.color } as React.CSSProperties} />
+                <span>{folder.title}</span>
               </button>
             </div>
-          )}
-        </div>
-        <div className="sidebar-folder-tree">
-          {folders.map((folder) => {
-            const folderDecks = decks.filter((deck) => deck.folderId === folder.id);
-            const expanded = expandedFolders.has(folder.id);
-            return (
-              <div className="sidebar-folder" key={folder.id}>
-                <div className={activeFolderId === folder.id ? "sidebar-folder-row active" : "sidebar-folder-row"}>
-                  <button
-                    className={expanded ? "folder-chevron expanded" : "folder-chevron"}
-                    type="button"
-                    onClick={() => toggleFolder(folder.id)}
-                    aria-label={`${expanded ? "Chiudi" : "Apri"} ${folder.title}`}
-                    aria-expanded={expanded}
-                  >›</button>
-                  <button
-                    className="sidebar-folder-link"
-                    type="button"
-                    onClick={() => {
-                      setExpandedFolders((current) => new Set(current).add(folder.id));
-                      onNavigate({ name: "folder", folderId: folder.id });
-                    }}
-                  >
-                    <i style={{ background: folder.color }} aria-hidden="true" />
-                    <span>{folder.title}</span>
-                    <small>{folderDecks.length}</small>
+            <div className={open ? "tree-children open" : "tree-children"} aria-hidden={!open}>
+                {renderTree(folder.id, depth + 1)}
+                {decks.filter((deck) => deck.folderId === folder.id).map((deck) => (
+                  <button className={view.name === "deck" && view.id === deck.id ? "tree-deck active" : "tree-deck"} title={deck.title} style={{ "--depth": depth + 1, "--deck": deck.color } as React.CSSProperties} key={deck.id} type="button" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-lume-deck", deck.id); }} onClick={() => onNavigate({ name: "deck", id: deck.id })}>
+                    <i /> <span>{deck.title}</span>
                   </button>
-                </div>
-                {expanded && (
-                  <div className="sidebar-set-list">
-                    {folderDecks.map((deck) => (
-                      <button
-                        className={activeDeckId === deck.id ? "active" : ""}
-                        type="button"
-                        key={deck.id}
-                        onClick={() => onNavigate({ name: "deck", deckId: deck.id })}
-                      >
-                        {deck.title}
-                      </button>
-                    ))}
-                    <button className="sidebar-new-set" type="button" onClick={() => onCreateSet(folder.id)}>
-                      ＋ Nuovo set
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
+                ))}
+            </div>
+          </div>
+        );
+      });
 
-      <div className="sidebar-spacer" />
-      <p className="local-note">Gratuito · I dati restano sul tuo dispositivo</p>
+  return (
+    <aside className="sidebar-new">
+      <button className="wordmark" type="button" onClick={() => onNavigate({ name: "home" })}>Lume</button>
+      <nav className="primary-nav" aria-label="Navigazione principale">
+        <button className={view.name === "home" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "home" })}><i className="icon-home" />Il mio spazio</button>
+        <button className={view.name === "explore" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "explore" })}><i className="icon-search" />Esplora</button>
+      </nav>
+      <div className={dropTarget === null ? "sidebar-folders-heading drop-target" : "sidebar-folders-heading"} onDragOver={(event) => { event.preventDefault(); setDropTarget(null); }} onDragLeave={() => setDropTarget(undefined)} onDrop={(event) => dropInto(event, null)}>
+        <span>Le mie cartelle</span>
+        <button type="button" onClick={onCreate} aria-label="Crea cartella o set">＋</button>
+      </div>
+      <div className="folder-tree">{renderTree(null)}</div>
+      {decks.some((deck) => !deck.folderId) && (
+        <div className="independent-tree">
+          <span>Set indipendenti</span>
+          {decks.filter((deck) => !deck.folderId).map((deck) => (
+            <button type="button" title={deck.title} key={deck.id} draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-lume-deck", deck.id); }} onClick={() => onNavigate({ name: "deck", id: deck.id })}><i style={{ background: deck.color }} />{deck.title}</button>
+          ))}
+        </div>
+      )}
+      <div className="sidebar-bottom">
+        <button type="button" onClick={onTheme} aria-label={theme === "dark" ? "Passa alla modalità chiara" : "Passa alla modalità scura"}><i className={theme === "dark" ? "theme-night" : "theme-day"} /></button>
+        <button type="button" onClick={onPreferences} aria-label="Preferenze"><i className="icon-profile" /></button>
+      </div>
+      <button className={resizing ? "sidebar-resizer active" : "sidebar-resizer"} type="button" onPointerDown={(event) => { event.preventDefault(); setResizing(true); }} aria-label="Ridimensiona la colonna laterale"><i /></button>
     </aside>
   );
 }
 
-function Topbar({
-  theme,
-  font,
-  userEmail,
-  soundMode,
-  soundPanelOpen,
-  lumePanelOpen,
-  onToggleTheme,
-  onFontChange,
-  onToggleSound,
-  onToggleLume,
-  onStartBreathing,
-  onOpenAccount,
-}: {
-  theme: Settings["theme"];
-  font: FontChoice;
-  userEmail?: string;
-  soundMode: SoundMode;
-  soundPanelOpen: boolean;
-  lumePanelOpen: boolean;
-  onToggleTheme: () => void;
-  onFontChange: (font: FontChoice) => void;
-  onToggleSound: () => void;
-  onToggleLume: () => void;
-  onStartBreathing: () => void;
-  onOpenAccount: () => void;
-}) {
+function Topbar({ onHome, onFocus, onBreathe, onPreferences }: { onHome: () => void; onFocus: () => void; onBreathe: () => void; onPreferences: () => void }) {
   return (
-    <header className="topbar">
-      <div className="mobile-brand">
-        <Brand />
-      </div>
-      <div className="top-actions">
-        <button
-          className={`icon-button lume-mode-button ${lumePanelOpen ? "active" : ""}`}
-          type="button"
-          onClick={onToggleLume}
-          aria-label="Timer studio con candela"
-          aria-expanded={lumePanelOpen}
-        >
-          <span className="mini-candle-icon" aria-hidden="true"><i /></span>
-        </button>
-        <button
-          className="icon-button breathing-mode-button"
-          type="button"
-          onClick={onStartBreathing}
-          aria-label="Pausetta: cinque respiri guidati"
-          title="Pausetta"
-        >
-          <span className="breathing-icon" aria-hidden="true"><i /></span>
-          <span className="breathing-button-label">Pausetta</span>
-        </button>
-        <button
-          className={`icon-button sound-button ${soundMode !== "off" ? "is-playing" : ""} ${soundPanelOpen ? "active" : ""}`}
-          type="button"
-          onClick={onToggleSound}
-          aria-label="Suoni per la concentrazione"
-          aria-expanded={soundPanelOpen}
-        >
-          <span aria-hidden="true">♫</span>
-          {soundMode !== "off" && <i />}
-        </button>
-        <label className="top-font-control">
-          <span className="sr-only">Font generale</span>
-          <select
-            value={font}
-            onChange={(event) =>
-              onFontChange(event.target.value as FontChoice)
-            }
-            aria-label="Font generale"
-          >
-            {fontOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          className="theme-toggle"
-          type="button"
-          onClick={onToggleTheme}
-          aria-label={theme === "light" ? "Attiva modalità scura" : "Attiva modalità chiara"}
-        >
-          <span className="theme-symbol light" aria-hidden="true"><b /></span>
-          <i className={theme === "dark" ? "dark" : ""} />
-          <span className="theme-symbol dark" aria-hidden="true" />
-        </button>
-        <button
-          className="account-button"
-          type="button"
-          onClick={onOpenAccount}
-          aria-label={userEmail ? `Preferenze e profilo ${userEmail}` : "Preferenze e accesso"}
-        >
-          <span aria-hidden="true">◎</span>
-          <span>Preferenze</span>
-        </button>
+    <header className="topbar-new">
+      <button className="mobile-wordmark" type="button" onClick={onHome}>Lume</button>
+      <div className="top-tools">
+        <button type="button" onClick={onFocus} aria-label="Timer Lume"><i className="mini-candle" /><span>Timer Lume</span></button>
+        <button type="button" onClick={onBreathe} aria-label="Respira"><i className="breath-dot" /><span>Respira</span></button>
+        <button className="mobile-preferences-tool" type="button" onClick={onPreferences} aria-label="Preferenze"><i className="icon-profile" /><span>Preferenze</span></button>
       </div>
     </header>
   );
 }
 
-function Dashboard({
+function Home({
   folders,
   decks,
+  resumeDeck,
+  randomEntry,
+  randomFlipped,
+  mastery,
+  due,
   totalCards,
-  dueCards,
-  mastery: masteryValue,
+  studyDayStreak,
   focusMinutes,
-  bestStreak,
   onOpenFolder,
-  onStudy,
-  onContinueCard,
-  onCreate,
+  onOpenDeck,
+  onRandom,
+  onFlipRandom,
+  onStudyRandom,
+  onResume,
+  onFocus,
+  onReview,
   onCreateFolder,
-  onOpenFocus,
-  onReviewDue,
-  onViewAll,
 }: {
   folders: Folder[];
   decks: Deck[];
-  totalCards: number;
-  dueCards: number;
+  resumeDeck?: Deck;
+  randomEntry: { deck: Deck; card: Card } | null;
+  randomFlipped: boolean;
   mastery: number;
+  due: number;
+  totalCards: number;
+  studyDayStreak: number;
   focusMinutes: number;
-  bestStreak: number;
   onOpenFolder: (id: string) => void;
-  onStudy: (deck: Deck) => void;
-  onContinueCard: (deckId: string, cardId: string) => void;
-  onCreate: () => void;
+  onOpenDeck: (id: string) => void;
+  onRandom: () => void;
+  onFlipRandom: () => void;
+  onStudyRandom: () => void;
+  onResume: () => void;
+  onFocus: () => void;
+  onReview: () => void;
   onCreateFolder: () => void;
-  onOpenFocus: () => void;
-  onReviewDue: () => void;
-  onViewAll: () => void;
 }) {
-  const recent = [...decks]
-    .sort((a, b) => (b.lastStudied ?? b.createdAt) - (a.lastStudied ?? a.createdAt))
-    .slice(0, 3);
-
+  const rootFolders = folders.filter((folder) => !folder.parentId);
   return (
-    <div className="dashboard">
-      <section className="dashboard-grid">
-        <div className="continue-card">
-          <div className="section-heading compact">
-            <div>
-              <span className="eyebrow">Riprendi da qui</span>
-              <h2>{recent[0]?.title ?? "Il tuo primo set"}</h2>
-            </div>
-            {recent[0] && (
-              <span className="last-seen">
-                {formatRelativeTime(recent[0].lastStudied)}
-              </span>
-            )}
-          </div>
-          {recent[0] ? (
-            <>
-              <div className="continue-progress">
-                <div>
-                  <span>Padronanza</span>
-                  <strong>{mastery(recent[0])}%</strong>
-                </div>
-                <div className="progress-track">
-                  <i style={{ width: `${mastery(recent[0])}%` }} />
-                </div>
-              </div>
-              <div className="continue-footer">
-                <span>{recent[0].cards.length} carte nel set</span>
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={() => onStudy(recent[0])}
-                  disabled={!recent[0].cards.length}
-                >
-                  Riprendi lo studio <span aria-hidden="true">→</span>
-                </button>
-              </div>
-            </>
-          ) : (
-            <button className="primary-button" type="button" onClick={onCreate}>
-              Crea il primo set
+    <div className="home-new">
+      <section className="home-primary-grid">
+        <article className="resume-panel">
+          <div className="panel-heading"><span>Riprendi da qui</span><button type="button" onClick={() => resumeDeck && onOpenDeck(resumeDeck.id)}>›</button></div>
+          {resumeDeck ? (
+            <button className="resume-content" type="button" onClick={onResume}>
+              <span className={`resume-notebook pattern-${resumeDeck.pattern}`} style={{ "--resume-deck": resumeDeck.color, "--resume-deck-text": getContrast(resumeDeck.color) } as React.CSSProperties}><span className="resume-spine" /><b>{resumeDeck.title}</b></span>
+              <span><strong>{resumeDeck.title}</strong><i className="thin-progress"><b style={{ width: `${Math.min(100, Math.round((resumeDeck.cards.reduce((sum, card) => sum + card.known, 0) / Math.max(1, resumeDeck.cards.length * 4)) * 100))}%` }} /></i><small>{resumeDeck.cards.length} flashcard · {formatRelative(resumeDeck.lastStudied)}</small></span>
             </button>
-          )}
-        </div>
+          ) : <p className="empty-copy">Crea il tuo primo set per iniziare.</p>}
+        </article>
 
-        <RandomFlashcard decks={decks} onContinue={onContinueCard} />
+        <article className="random-panel">
+          <div className="panel-heading"><span>Flashcard a caso</span><button type="button" onClick={onRandom} aria-label="Mostra un’altra flashcard">↻</button></div>
+          {randomEntry ? (
+            <>
+              <button className={randomFlipped ? "random-stack flipped" : "random-stack"} type="button" onClick={onFlipRandom}>
+                <span className="stack-sheet sheet-one" /><span className="stack-sheet sheet-two" />
+                <span className="random-card front"><small>{randomEntry.deck.title}</small><RichText value={randomEntry.card.front} /><em>Clicca per rivelare</em></span>
+                <span className="random-card back"><small>Significato</small><RichText value={randomEntry.card.back} /><em>Torna alla domanda</em></span>
+              </button>
+              <button className="continue-random" type="button" onClick={onStudyRandom}>Continua a studiare →</button>
+            </>
+          ) : <p className="empty-copy">Nessuna flashcard disponibile.</p>}
+        </article>
       </section>
 
-      <section className="overview-section">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">In breve</span>
-            <h2>Il tuo percorso</h2>
-          </div>
-        </div>
-        <div className="stat-row">
-          <button className="stat-card focus-timer-stat" type="button" onClick={onOpenFocus}>
-            <span>Timer Lume</span>
-            <strong>{focusMinutes} min</strong>
-            <small>Studia con la candela accesa <b aria-hidden="true">→</b></small>
-          </button>
-          <div className="stat-card">
-            <span>Flashcards</span>
-            <strong>{totalCards}</strong>
-            <small>pronte da ripassare</small>
-          </div>
-          <button
-            className="stat-card accent-stat review-stat"
-            type="button"
-            onClick={onReviewDue}
-            disabled={!dueCards}
-          >
-            <span>Da rivedere</span>
-            <strong>{dueCards}</strong>
-            <small>{dueCards ? "Ripassa le carte più ostinate →" : "Nessuna carta in attesa"}</small>
-          </button>
-          <div className="stat-card">
-            <span>Padronanza</span>
-            <strong>{masteryValue}%</strong>
-            <small>su tutte le risposte · record streak <b>{bestStreak}</b></small>
-          </div>
-        </div>
+      <section className="metrics-strip">
+        <div><span>Il tuo percorso</span><strong>{studyDayStreak}</strong><small>{studyDayStreak === 1 ? "giorno consecutivo" : "giorni consecutivi"}</small></div>
+        <button className="metric-action" type="button" onClick={onFocus}><span>Timer Lume</span><strong>{focusMinutes} min</strong><small>Avvia subito la candela →</small></button>
+        <div><span>Flashcards</span><strong>{totalCards}</strong><small>totali</small></div>
+        <button className="metric-action" type="button" onClick={onReview}><span>Da rivedere</span><strong>{due}</strong><small>Ripassa le più ostinate →</small></button>
+        <div><span>Padronanza</span><strong>{mastery}%</strong><small>su tutte le risposte</small></div>
       </section>
 
-      <section className="recent-section">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">Il tuo archivio</span>
-            <h2>Le tue cartelle</h2>
-          </div>
-          <button className="text-button" type="button" onClick={onViewAll}>
-            Vedi tutti <span aria-hidden="true">→</span>
-          </button>
-        </div>
-        <div className="folder-grid">
-          {folders.slice(0, 3).map((folder) => (
-            <FolderTile
-              key={folder.id}
-              folder={folder}
-              decks={decks.filter((deck) => deck.folderId === folder.id)}
-              onOpen={() => onOpenFolder(folder.id)}
-            />
+      <section className="home-folders">
+        <div className="section-title"><h1>Le mie cartelle</h1></div>
+        <div className="folder-card-grid">
+          {rootFolders.map((folder) => (
+            <FolderCard key={folder.id} folder={folder} count={decks.filter((deck) => deck.folderId === folder.id).length + folders.filter((item) => item.parentId === folder.id).length} onOpen={() => onOpenFolder(folder.id)} />
           ))}
-          <button className="new-folder-tile" type="button" onClick={onCreateFolder}>
-            <span aria-hidden="true">＋</span>
-            <strong>Nuova cartella</strong>
-            <small>Crea un nuovo spazio per i tuoi set</small>
-          </button>
+          <button className="new-folder-card" type="button" onClick={onCreateFolder}><b>＋</b><strong>Nuova cartella</strong><small>Può contenere cartelle e set</small></button>
         </div>
       </section>
     </div>
   );
 }
 
-function RandomFlashcard({
-  decks,
-  onContinue,
-}: {
-  decks: Deck[];
-  onContinue: (deckId: string, cardId: string) => void;
-}) {
-  const cards = useMemo(
-    () =>
-      decks.flatMap((deck) =>
-        deck.cards.map((card) => ({
-          key: `${deck.id}:${card.id}`,
-          deckId: deck.id,
-          card,
-          deckTitle: deck.title,
-          font: deck.font,
-        })),
-      ),
-    [decks],
-  );
-  const [selectedKey, setSelectedKey] = useState("");
-  const [flipped, setFlipped] = useState(false);
-
-  useEffect(() => {
-    if (!cards.length) {
-      if (selectedKey) setSelectedKey("");
-      return;
-    }
-    if (!cards.some((item) => item.key === selectedKey)) {
-      const next = cards[Math.floor(Math.random() * cards.length)];
-      setSelectedKey(next.key);
-      setFlipped(false);
-    }
-  }, [cards, selectedKey]);
-
-  const selected = cards.find((item) => item.key === selectedKey) ?? cards[0];
-  const pickAnother = () => {
-    if (!cards.length) return;
-    const currentIndex = cards.findIndex((item) => item.key === selected?.key);
-    let nextIndex = Math.floor(Math.random() * cards.length);
-    if (cards.length > 1 && nextIndex === currentIndex) {
-      nextIndex = (nextIndex + 1) % cards.length;
-    }
-    setSelectedKey(cards[nextIndex].key);
-    setFlipped(false);
-  };
-
-  return (
-    <article className="calm-card random-flashcard-panel">
-      <div className="random-flashcard-toolbar">
-        <span className="eyebrow">Flashcard a caso</span>
-        <button type="button" onClick={pickAnother} disabled={!cards.length}>
-          Un’altra <span aria-hidden="true">↻</span>
-        </button>
-      </div>
-
-      {selected ? (
-        <>
-          <button
-            className={flipped ? "random-flashcard-face is-flipped" : "random-flashcard-face"}
-            type="button"
-            onClick={() => setFlipped((value) => !value)}
-            aria-pressed={flipped}
-            aria-label={flipped ? "Mostra il fronte della flashcard" : "Mostra il significato"}
-            style={{ fontFamily: fontFamily(selected.font) }}
-          >
-            <span className="random-card-inner">
-              <span className="random-card-side random-card-front">
-                <small>{selected.deckTitle}</small>
-                <RichText value={selected.card.front} />
-                <em>Gira la carta</em>
-              </span>
-              <span className="random-card-side random-card-back">
-                <small>Significato</small>
-                <RichText value={selected.card.back} />
-                <em>Torna alla domanda</em>
-              </span>
-            </span>
-          </button>
-          <button
-            className="random-continue-button"
-            type="button"
-            onClick={() => onContinue(selected.deckId, selected.card.id)}
-          >
-            Continua a studiare <span aria-hidden="true">→</span>
-          </button>
-        </>
-      ) : (
-        <div className="random-flashcard-empty">
-          <strong>Qui apparirà una carta a sorpresa.</strong>
-          <p>Crea la tua prima flashcard per iniziare.</p>
-        </div>
-      )}
-    </article>
-  );
-}
-
-function FolderTile({
-  folder,
-  decks,
-  onOpen,
-}: {
-  folder: Folder;
-  decks: Deck[];
-  onOpen: () => void;
-}) {
-  const cards = decks.reduce((sum, deck) => sum + deck.cards.length, 0);
+function FolderCard({ folder, count, onOpen, onDeckDrop }: { folder: Folder; count: number; onOpen: () => void; onDeckDrop?: (deckId: string) => void }) {
+  const [dropActive, setDropActive] = useState(false);
   return (
     <button
-      className="folder-tile"
-      style={{ "--folder": folder.color } as React.CSSProperties}
-      onClick={onOpen}
+      className={dropActive ? "folder-card drop-active" : "folder-card"}
+      style={{ "--folder": folder.color, "--folder-text": getContrast(folder.color) } as React.CSSProperties}
       type="button"
+      onClick={onOpen}
+      onDragOver={onDeckDrop ? (event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropActive(true); } : undefined}
+      onDragLeave={onDeckDrop ? () => setDropActive(false) : undefined}
+      onDrop={onDeckDrop ? (event) => {
+        event.preventDefault();
+        setDropActive(false);
+        const deckId = event.dataTransfer.getData("application/x-lume-deck");
+        if (deckId) onDeckDrop(deckId);
+      } : undefined}
     >
-      <span className="folder-papers" aria-hidden="true">
-        {[0, 1, 2].map((index) => (
-          <i key={index} style={{ "--paper-index": index } as React.CSSProperties} />
-        ))}
-      </span>
-      <span className="folder-back" aria-hidden="true" />
-      <span className="folder-front">
-        <small>Cartella · {folder.visibility === "public" ? "Pubblica" : "Privata"}</small>
-        <strong>{folder.title}</strong>
-        <span>{decks.length} set · {cards} flashcard</span>
-      </span>
+      <span className="folder-tab" />
+      <span className="folder-body"><small>{folder.visibility === "public" ? "Pubblica" : "Privata"}</small><strong>{folder.title}</strong><em>{count} elementi</em></span>
+      {onDeckDrop && <span className="drop-copy">Rilascia qui</span>}
     </button>
   );
 }
 
-function SetCover({
-  deck,
-  onOpen,
-}: {
-  deck: Deck;
-  onOpen: () => void;
-}) {
-  return (
-    <button className="set-cover-card" type="button" onClick={onOpen}>
-      <span className="set-cover-copy">
-        <small>{deck.visibility === "public" ? "◉ Pubblico" : "Set privato"}</small>
-        <strong>{deck.title}</strong>
-        <span>{deck.cards.length} carte{deck.keywordHelp ? " · Keyword Help" : ""}</span>
-      </span>
-      <span
-        className="set-cover-art"
-        style={{
-          "--deck": deck.color,
-          "--card": deck.cardColor,
-          "--deck-text": getTextColor(deck.color),
-          "--deck-font": fontFamily(deck.font),
-        } as React.CSSProperties}
-      >
-        <small>Lume / study set</small>
-        <strong>{deck.title}</strong>
-        <b aria-hidden="true">{String(deck.cards.length).padStart(2, "0")}</b>
-        <i>{deck.description || "Domande e risposte"}</i>
-      </span>
-    </button>
-  );
-}
-
-function FolderLibrary({
-  folders,
-  decks,
-  onOpenFolder,
-  onCreate,
-}: {
-  folders: Folder[];
-  decks: Deck[];
-  onOpenFolder: (id: string) => void;
-  onCreate: () => void;
-}) {
-  const [query, setQuery] = useState("");
-  const filtered = folders.filter((folder) => {
-    const folderDecks = decks.filter((deck) => deck.folderId === folder.id);
-    return `${folder.title} ${folderDecks.map((deck) => deck.title).join(" ")}`
-      .toLowerCase()
-      .includes(query.toLowerCase());
-  });
+function FolderLibrary({ folders, decks, onOpen, onCreate }: { folders: Folder[]; decks: Deck[]; onOpen: (id: string) => void; onCreate: () => void }) {
+  const roots = folders.filter((folder) => !folder.parentId);
   return (
     <div className="library-page">
-      <div className="page-title-row">
-        <div>
-          <span className="eyebrow">Il tuo spazio</span>
-          <h1>Le mie cartelle</h1>
-          <p>Ogni cartella raccoglie i set che appartengono allo stesso mondo.</p>
-        </div>
-        <button className="primary-button" type="button" onClick={onCreate}>
-          <span aria-hidden="true">＋</span> Nuova cartella
-        </button>
+      <div className="page-intro"><span>Archivio</span><h1>Tutte le cartelle</h1><p>Organizza lo studio in livelli: materia, corso, esame o qualunque struttura funzioni per te.</p></div>
+      <div className="folder-card-grid large">
+        {roots.map((folder) => <FolderCard key={folder.id} folder={folder} count={decks.filter((deck) => deck.folderId === folder.id).length + folders.filter((item) => item.parentId === folder.id).length} onOpen={() => onOpen(folder.id)} />)}
+        <button className="new-folder-card" type="button" onClick={onCreate}><b>＋</b><strong>Nuova cartella</strong><small>Crea un nuovo livello</small></button>
       </div>
-      <div className="library-toolbar">
-        <label className="search-field">
-          <span aria-hidden="true">⌕</span>
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Cerca tra cartelle e set…"
-          />
-        </label>
-        <div className="library-toolbar-actions">
-          <span>{filtered.length} {filtered.length === 1 ? "cartella" : "cartelle"}</span>
-        </div>
-      </div>
-      <div className="folder-grid library-folder-grid">
-        {filtered.map((folder) => (
-          <FolderTile
-            key={folder.id}
-            folder={folder}
-            decks={decks.filter((deck) => deck.folderId === folder.id)}
-            onOpen={() => onOpenFolder(folder.id)}
-          />
-        ))}
-        <button className="new-folder-tile" type="button" onClick={onCreate}>
-          <span aria-hidden="true">＋</span>
-          <strong>Crea una nuova cartella</strong>
-          <small>Scegli un nome e un colore</small>
-        </button>
-      </div>
-      {!filtered.length && (
-        <div className="empty-state">
-          <span aria-hidden="true">◌</span>
-          <h2>Nessuna cartella trovata</h2>
-          <p>Prova con un’altra parola oppure crea una nuova cartella.</p>
-        </div>
-      )}
     </div>
   );
 }
 
-function CommunityPage({
-  decks,
-  userId,
-  firebaseReady,
-  onRefresh,
-  onStudy,
-}: {
-  decks: PublicDeck[];
-  userId?: string;
-  firebaseReady: boolean;
-  onRefresh: () => void;
-  onStudy: (catalogId: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const normalizedQuery = query.trim().toLowerCase();
-  const filtered = decks.filter((deck) => {
-    if (!normalizedQuery) return true;
-    const searchable = [
-      deck.title,
-      deck.description,
-      deck.author,
-      ...deck.cards.flatMap((card) => [plainText(card.front), plainText(card.back)]),
-    ].join(" ").toLowerCase();
-    return searchable.includes(normalizedQuery);
-  });
-
+function Explore({ search, onSearch, decks, cloudStatus, onOpen }: { search: string; onSearch: (value: string) => void; decks: Deck[]; cloudStatus: CloudStatus; onOpen: (id: string) => void }) {
+  const visible = decks.filter((deck) => `${deck.title} ${deck.description}`.toLowerCase().includes(search.toLowerCase()));
   return (
-    <div className="community-page">
-      <div className="page-title-row community-title-row">
-        <div>
-          <span className="eyebrow">Conoscenza condivisa</span>
-          <h1>Esplora flashcard pubbliche</h1>
-          <p>Cerca una materia o una keyword e studia i set messi a disposizione dalla community.</p>
-        </div>
-        <button className="secondary-button" type="button" onClick={onRefresh} disabled={!firebaseReady}>
-          <span aria-hidden="true">↻</span> Aggiorna catalogo
-        </button>
+    <div className="explore-page">
+      <div className="page-intro"><span>Biblioteca pubblica</span><h1>Esplora flashcards</h1><p>Cerca tra i set pubblicati dalla comunità. Puoi aprirli, studiarli e lasciare una valutazione.</p></div>
+      <label className="search-box"><i className="icon-search" /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Cerca parole chiave, materie o titoli…" /></label>
+      <div className="notebook-grid public-grid">
+        {visible.map((deck) => <Notebook key={deck.id} deck={deck} onOpen={() => onOpen(deck.id)} />)}
+        {!visible.length && <p className="empty-copy">{cloudStatus === "checking" || cloudStatus === "loading" ? "Sto caricando la biblioteca pubblica…" : "Nessun set pubblico corrisponde alla ricerca."}</p>}
       </div>
-      <div className="community-search-panel">
-        <label className="search-field community-search">
-          <span aria-hidden="true">⌕</span>
-          <input
-            autoFocus
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Cerca: psicologia, inglese, Bauhaus…"
-          />
-        </label>
-        <span>{filtered.length} {filtered.length === 1 ? "set trovato" : "set trovati"}</span>
-      </div>
-      <div className="community-grid">
-        {filtered.map((deck) => (
-          <article className="community-deck" key={deck.catalogId}>
-            <SetCover deck={deck} onOpen={() => onStudy(deck.catalogId)} />
-            <div className="community-deck-meta">
-              <span>
-                {deck.sourceFolderPublic && deck.sourceFolderTitle
-                  ? `${deck.sourceFolderTitle} · `
-                  : ""}
-                {deck.ownerId === userId || deck.ownerId === "local-user" ? "Il tuo set" : `di ${deck.author}`}
-              </span>
-              <button type="button" onClick={() => onStudy(deck.catalogId)}>
-                Studia <span aria-hidden="true">→</span>
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
-      {!filtered.length && (
-        <div className="empty-state">
-          <span aria-hidden="true">⌕</span>
-          <h2>Nessun set con questa keyword</h2>
-          <p>Prova una parola più generale oppure torna a esplorare tutti i set.</p>
-        </div>
-      )}
     </div>
   );
 }
 
-function FolderPage({
+function FolderView({
   folder,
+  ancestors,
+  childFolders,
   decks,
-  onBack,
+  allDecks,
+  descendantIds,
+  onHome,
+  onOpenFolder,
   onOpenDeck,
-  onCreateSet,
-  onStudyFolder,
-  onEditFolder,
+  onCreateFolder,
+  onCreateDeck,
+  onEdit,
+  onDeleteFolder,
+  onDeleteDecks,
+  onMoveDecks,
+  onRequestTransfer,
+  onStudy,
 }: {
   folder: Folder;
+  ancestors: Folder[];
+  childFolders: Folder[];
   decks: Deck[];
-  onBack: () => void;
+  allDecks: Deck[];
+  descendantIds: Set<string>;
+  onHome: () => void;
+  onOpenFolder: (id: string) => void;
   onOpenDeck: (id: string) => void;
-  onCreateSet: () => void;
-  onStudyFolder: () => void;
-  onEditFolder: () => void;
-}) {
-  const cards = decks.reduce((sum, deck) => sum + deck.cards.length, 0);
-  return (
-    <div className="folder-page">
-      <button className="back-button" type="button" onClick={onBack}>
-        <span aria-hidden="true">←</span> Il mio spazio
-      </button>
-      <div className="folder-page-heading">
-        <div>
-          <span className="folder-page-emoji" style={{ background: folder.color }} aria-hidden="true" />
-          <span className="eyebrow">Fascicolo · {folder.visibility === "public" ? "Pubblico" : "Privato"}</span>
-          <h1>{folder.title}</h1>
-          <p>{decks.length} set · {cards} flashcard</p>
-        </div>
-        <div>
-          <button className="secondary-button" type="button" onClick={onEditFolder}>Modifica cartella</button>
-          <button className="secondary-button" type="button" onClick={onStudyFolder} disabled={!cards}>
-            <span aria-hidden="true">▶</span> Studia tutta la cartella
-          </button>
-          <button className="primary-button" type="button" onClick={onCreateSet}>＋ Nuovo set</button>
-        </div>
-      </div>
-      <div className="set-cover-grid">
-        {decks.map((deck) => (
-          <SetCover key={deck.id} deck={deck} onOpen={() => onOpenDeck(deck.id)} />
-        ))}
-        <button className="new-set-cover" type="button" onClick={onCreateSet}>
-          <span aria-hidden="true">＋</span>
-          <strong>Nuovo set</strong>
-          <small>Aggiungi una nuova copertina al fascicolo</small>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function DeckDetail({
-  deck,
-  onBack,
-  onAddCards,
-  onImport,
-  onStudy,
-  onReview,
-  onEdit,
-  onDelete,
-  onDeleteCard,
-}: {
-  deck: Deck;
-  onBack: () => void;
-  onAddCards: () => void;
-  onImport: () => void;
-  onStudy: () => void;
-  onReview: () => void;
+  onCreateFolder: () => void;
+  onCreateDeck: () => void;
   onEdit: () => void;
-  onDelete: () => void;
-  onDeleteCard: (cardId: string) => void;
+  onDeleteFolder: () => void;
+  onDeleteDecks: (ids: string[]) => void;
+  onMoveDecks: (ids: string[]) => void;
+  onRequestTransfer: (deckId: string, targetFolderId: string) => void;
+  onStudy: () => void;
 }) {
-  const difficult = deck.cards.filter((card) => card.missed > 0).length;
-  return (
-    <div
-      className="deck-page"
-      style={{ "--deck-font": fontFamily(deck.font) } as React.CSSProperties}
-    >
-      <button className="back-button" type="button" onClick={onBack}>
-        <span aria-hidden="true">←</span> Torna alla cartella
-      </button>
-      <section
-        className="deck-hero"
-        style={{
-          "--deck": deck.color,
-          "--card": deck.cardColor,
-          "--deck-text": getTextColor(deck.color),
-        } as React.CSSProperties}
-      >
-        <div className="deck-hero-copy">
-          <span className="eyebrow">Set di flashcard · {deck.visibility === "public" ? "Pubblico" : "Privato"}</span>
-          <h1>{deck.title}</h1>
-          <p>{deck.description || "Un posto per tutte le domande che contano."}</p>
-          <div className="deck-hero-stats">
-            <span><strong>{deck.cards.length}</strong> carte</span>
-            <span><strong>{mastery(deck)}%</strong> padronanza</span>
-            <span><strong>{difficult}</strong> da rivedere</span>
-          </div>
-        </div>
-        <div className="hero-card-stack" aria-hidden="true">
-          <i />
-          <i />
-          <b>L</b>
-        </div>
-      </section>
-
-      <div className="deck-actions-row">
-        <div>
-          <button
-            className="primary-button"
-            type="button"
-            onClick={onStudy}
-            disabled={!deck.cards.length}
-          >
-            <span aria-hidden="true">▶</span> Studia tutte
-          </button>
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={onReview}
-            disabled={!difficult}
-          >
-            <span aria-hidden="true">↻</span> Ripassa difficili ({difficult})
-          </button>
-          <button className="secondary-button" type="button" onClick={onAddCards}>
-            <span aria-hidden="true">＋</span> Aggiungi carte
-          </button>
-          <button className="secondary-button deck-import-button" type="button" onClick={onImport}>
-            <span aria-hidden="true">↑</span> Importa file .md
-          </button>
-        </div>
-        <div className="deck-menu-actions">
-          <button className="text-button" type="button" onClick={onEdit}>Modifica stile</button>
-          <button className="text-button danger" type="button" onClick={onDelete}>Elimina</button>
-        </div>
-      </div>
-
-      <section className="cards-section">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">Contenuti</span>
-            <h2>Le flashcards</h2>
-          </div>
-          <span className="quiet-hint">Domanda davanti · risposta dietro</span>
-        </div>
-        {deck.cards.length ? (
-          <div className="card-list">
-            {deck.cards.map((card, index) => (
-              <article className="card-row" key={card.id}>
-                <span className="card-index">{String(index + 1).padStart(2, "0")}</span>
-                <div>
-                  <small>Domanda</small>
-                  <p><RichText value={card.front} /></p>
-                </div>
-                <div>
-                  <small>Risposta</small>
-                  <p><RichText value={card.back} /></p>
-                </div>
-                <span className={`memory-dot ${card.missed > card.known ? "weak" : ""}`} title={`${card.known} note · ${card.missed} da rivedere`} />
-                <button
-                  className="row-delete"
-                  type="button"
-                  onClick={() => onDeleteCard(card.id)}
-                  aria-label={`Elimina la carta ${index + 1}`}
-                >
-                  ×
-                </button>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-cards">
-            <div aria-hidden="true">?</div>
-            <h3>Qui c’è spazio per la prima domanda.</h3>
-            <p>Aggiungi una o più coppie domanda-risposta e comincia subito.</p>
-            <button className="primary-button" type="button" onClick={onAddCards}>
-              Aggiungi le prime carte
-            </button>
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function StudySettingsModal({
-  request,
-  title,
-  cardCount,
-  activeOrder,
-  onStart,
-  onClose,
-}: {
-  request: StudyRequest;
-  title: string;
-  cardCount: number;
-  activeOrder?: StudyOrder;
-  onStart: (order: StudyOrder) => void;
-  onClose: () => void;
-}) {
-  const [order, setOrder] = useState<StudyOrder>(activeOrder ?? "random");
-  useEscape(onClose);
-  const sourceLabel = request.target.kind === "folder"
-    ? "Cartella completa"
-    : request.target.kind === "public"
-      ? "Set pubblico"
-      : "Set di flashcard";
-
-  return (
-    <div className="modal-backdrop study-settings-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="modal study-settings-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="study-settings-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="modal-header">
-          <div>
-            <span className="eyebrow">{sourceLabel} · {cardCount} carte</span>
-            <h2 id="study-settings-title">Come vuoi studiare “{title}”?</h2>
-          </div>
-          <button className="modal-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
-        </div>
-        <p className="modal-intro">Scegli l’ordine delle carte. Potrai riaprire queste impostazioni anche durante il ripasso.</p>
-        <fieldset className="study-order-fieldset">
-          <legend>Ordine delle flashcard</legend>
-          <button
-            className={order === "sequential" ? "selected" : ""}
-            type="button"
-            onClick={() => setOrder("sequential")}
-          >
-            <span aria-hidden="true">1—2—3</span>
-            <div><strong>In ordine</strong><small>Segui la sequenza con cui hai creato le carte.</small></div>
-            <i aria-hidden="true">{order === "sequential" ? "●" : "○"}</i>
-          </button>
-          <button
-            className={order === "random" ? "selected" : ""}
-            type="button"
-            onClick={() => setOrder("random")}
-          >
-            <span aria-hidden="true">⇄</span>
-            <div><strong>Ordine casuale</strong><small>Mescola le carte per un recupero meno prevedibile.</small></div>
-            <i aria-hidden="true">{order === "random" ? "●" : "○"}</i>
-          </button>
-        </fieldset>
-        <div className="study-settings-note">
-          <span aria-hidden="true">＋</span>
-          <p><strong>Altre impostazioni arriveranno qui.</strong><br />Questa schermata è già pronta ad accoglierle.</p>
-        </div>
-        <div className="modal-actions">
-          <button className="text-button" type="button" onClick={onClose}>Annulla</button>
-          <button className="primary-button" type="button" onClick={() => onStart(order)}>
-            {activeOrder ? "Applica al ripasso" : "Inizia a studiare"} <span aria-hidden="true">→</span>
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function StudyView({
-  deck,
-  card,
-  keywordHelp,
-  canEdit,
-  study,
-  onFlip,
-  onRate,
-  onEditCard,
-  onOpenSettings,
-  onToggleDirection,
-  onExit,
-  onReviewWrong,
-  onRestart,
-}: {
-  deck: Deck;
-  card?: Card;
-  keywordHelp: boolean;
-  canEdit: boolean;
-  study: StudySession;
-  onFlip: () => void;
-  onRate: (result: "known" | "missed") => void;
-  onEditCard: () => void;
-  onOpenSettings: () => void;
-  onToggleDirection: () => void;
-  onExit: () => void;
-  onReviewWrong: () => void;
-  onRestart: () => void;
-}) {
-  const [keywordRevealKey, setKeywordRevealKey] = useState<string>();
-  const keywordTimerRef = useRef<number | undefined>(undefined);
-  const progress = study.complete
-    ? 100
-    : Math.round((study.index / study.queue.length) * 100);
-  const frontFirst = study.direction !== "back-first";
-  const firstLabel = frontFirst ? "Domanda" : "Risposta";
-  const secondLabel = frontFirst ? "Risposta" : "Domanda";
-  const firstText = card ? (frontFirst ? card.front : card.back) : "";
-  const secondText = card ? (frontFirst ? card.back : card.front) : "";
-  const keywordAvailable = Boolean(
-    card && keywordHelp && !study.flipped && hasBoldKeywords(secondText),
-  );
-  const currentKeywordKey = `${card?.id ?? "none"}:${study.direction}`;
-  const keywordVisible = keywordRevealKey === currentKeywordKey;
-
-  useEffect(() => {
-    if (!keywordAvailable) return;
-    const keyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select") || target?.isContentEditable) return;
-      if (event.key === "3") {
-        event.preventDefault();
-        setKeywordRevealKey(currentKeywordKey);
-      }
-    };
-    const keyUp = (event: KeyboardEvent) => {
-      if (event.key === "3") setKeywordRevealKey(undefined);
-    };
-    window.addEventListener("keydown", keyDown);
-    window.addEventListener("keyup", keyUp);
-    return () => {
-      window.removeEventListener("keydown", keyDown);
-      window.removeEventListener("keyup", keyUp);
-    };
-  }, [currentKeywordKey, keywordAvailable]);
-
-  const revealKeywordsForThreeSeconds = () => {
-    if (!keywordAvailable) return;
-    if (keywordTimerRef.current) window.clearTimeout(keywordTimerRef.current);
-    setKeywordRevealKey(currentKeywordKey);
-    keywordTimerRef.current = window.setTimeout(() => setKeywordRevealKey(undefined), 3000);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedDecks, setSelectedDecks] = useState<Set<string>>(new Set());
+  const allCards = allDecks.filter((deck) => deck.folderId && descendantIds.has(deck.folderId)).reduce((sum, deck) => sum + deck.cards.length, 0);
+  const toggleSelected = (id: string) => setSelectedDecks((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const dragSelected = (event: React.DragEvent<HTMLButtonElement>) => {
+    const ids = Array.from(selectedDecks);
+    if (!ids.length) return;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-lume-decks", JSON.stringify(ids));
+    const ghost = document.createElement("div");
+    ghost.className = "multi-drag-ghost";
+    ghost.innerHTML = `<i></i><i></i><strong>${ids.length}</strong><span>${ids.length === 1 ? "set selezionato" : "set raggruppati"}</span>`;
+    document.body.appendChild(ghost);
+    event.dataTransfer.setDragImage(ghost, 38, 34);
+    window.setTimeout(() => ghost.remove(), 0);
   };
-
-  if (study.complete) {
-    const score = Math.round((study.known / study.queue.length) * 100);
-    return (
-      <div
-        className="study-page completion-page"
-        style={{ "--deck-font": fontFamily(deck.font) } as React.CSSProperties}
-      >
-        <button className="back-button" type="button" onClick={onExit}>
-          <span aria-hidden="true">←</span> Torna al set
-        </button>
-        <section className="completion-card">
-          <span className="completion-mark" aria-hidden="true">✦</span>
-          <span className="eyebrow">Sessione conclusa</span>
-          <h1>Hai dato spazio a ciò che stai imparando.</h1>
-          <p>
-            Hai ricordato {study.known} carte su {study.queue.length}. Le risposte
-            incerte sono già pronte per un nuovo giro.
-          </p>
-          <div className="score-ring" style={{ "--score": `${score * 3.6}deg` } as React.CSSProperties}>
-            <div><strong>{score}%</strong><span>ricordato</span></div>
-          </div>
-          <div className="completion-stats">
-            <span><i className="known" /> {study.known} le sapevi</span>
-            <span><i className="missed" /> {study.wrong.length} da rivedere</span>
-            <span><i className="points" /> {study.points} punti</span>
-            <span><i className="streak" /> streak migliore {study.bestStreak}</span>
-          </div>
-          <div className="completion-actions">
-            <button
-              className="primary-button"
-              type="button"
-              onClick={onReviewWrong}
-              disabled={!study.wrong.length}
-            >
-              Ripassa solo gli errori <span aria-hidden="true">→</span>
-            </button>
-            <button className="secondary-button" type="button" onClick={onRestart}>
-              Ricomincia tutto
-            </button>
-          </div>
-        </section>
-      </div>
-    );
-  }
-
-  if (!card) return null;
-
   return (
-    <div
-      className="study-page"
-      style={{
-        "--deck": deck.color,
-        "--card": deck.cardColor,
-        "--deck-font": fontFamily(deck.font),
-      } as React.CSSProperties}
-    >
-      <div className="study-header">
-        <button className="back-button" type="button" onClick={onExit}>
-          <span aria-hidden="true">×</span> Esci
-        </button>
-        <div className="study-title">
-          <span>{deck.title}</span>
-          <strong>{study.index + 1} / {study.queue.length}</strong>
+    <div className="folder-page-new" style={{ "--folder": folder.color, "--folder-soft": tint(folder.color, 0.86), "--folder-text": getContrast(folder.color) } as React.CSSProperties}>
+      <section className="folder-hero">
+        <nav className="breadcrumbs" aria-label="Percorso cartella"><button type="button" onClick={onHome}>Il mio spazio</button>{ancestors.map((item) => <span className="breadcrumb-step" key={item.id}><i>›</i><button type="button" aria-current={item.id === folder.id ? "page" : undefined} onClick={() => onOpenFolder(item.id)}>{item.title}</button></span>)}</nav>
+        <div className="folder-hero-content">
+          <span className="hero-folder-icon"><i /></span>
+          <div><small>{folder.visibility === "public" ? "Cartella pubblica" : "Cartella privata"}</small><h1>{folder.title}</h1><p>{childFolders.length} sottocartelle · {decks.length} set · {allCards} flashcard</p></div>
         </div>
-        <div className="study-header-actions">
-          <button className="study-direction-toggle" type="button" onClick={onToggleDirection}>
-            <span aria-hidden="true">⇄</span>
-            <span className="direction-label">{frontFirst ? "Fronte → retro" : "Retro → fronte"}</span>
-          </button>
-          <button className="study-settings-button" type="button" onClick={onOpenSettings}>
-            <span aria-hidden="true">⚙</span> Impostazioni
-          </button>
-          {canEdit && (
-            <button className="edit-study-card" type="button" onClick={onEditCard}>
-              <span aria-hidden="true">✎</span> Modifica carta
-            </button>
-          )}
-          <span className="study-score">{study.known} so · {study.wrong.length} rivedo</span>
-        </div>
-      </div>
-      <div className="study-progress"><i style={{ width: `${progress}%` }} /></div>
+        <div className="folder-actions"><button className="soft-button" type="button" onClick={onEdit}>Personalizza</button><button className="soft-button" type="button" onClick={onCreateFolder}>＋ Sottocartella</button><button className="hero-button" type="button" onClick={onStudy}>Studia tutta la cartella</button><button className="delete-folder-link" type="button" onClick={onDeleteFolder}>{folder.parentId ? "Elimina sottocartella" : "Elimina cartella"}</button></div>
+      </section>
 
-      <section className="study-stage">
-        <p className="study-instruction">
-          {study.flipped ? "Quanto ti è sembrata familiare?" : "Prova a rispondere, poi gira la carta."}
-        </p>
-        <button
-          className={`flashcard ${study.flipped ? "flipped" : ""}`}
-          type="button"
-          onClick={onFlip}
-          aria-label={study.flipped ? `Mostra ${firstLabel.toLowerCase()}` : `Mostra ${secondLabel.toLowerCase()}`}
-        >
-          <span className="flashcard-face flashcard-front">
-            <small>{firstLabel}</small>
-            <RichText value={firstText} className="flashcard-content" />
-            <i>Premi per girare <kbd>spazio</kbd></i>
-            {keywordAvailable && keywordVisible && (
-              <span className="keyword-help-overlay" aria-live="polite">
-                <small>Keyword Help</small>
-                <span dangerouslySetInnerHTML={{ __html: keywordMarkup(secondText) }} />
-              </span>
-            )}
-          </span>
-          <span className="flashcard-face flashcard-back">
-            <small>{secondLabel}</small>
-            <RichText value={secondText} className="flashcard-content" />
-            <i>Premi per tornare a {firstLabel.toLowerCase()}</i>
-          </span>
-        </button>
-
-        {keywordAvailable && (
-          <button className="keyword-help-button" type="button" onClick={revealKeywordsForThreeSeconds}>
-            <span aria-hidden="true">3</span> Mostra keywords per 3 secondi
-          </button>
-        )}
-
-        <div className={`rating-actions ${study.flipped ? "visible" : ""}`} aria-hidden={!study.flipped}>
-          <button
-            className="rate-button known"
-            type="button"
-            onClick={() => onRate("known")}
-            tabIndex={study.flipped ? 0 : -1}
-          >
-            <span aria-hidden="true">1</span>
-            <strong>La so</strong>
-            <small>Passa alla prossima · tasto 1</small>
-          </button>
-          <button
-            className="rate-button missed"
-            type="button"
-            onClick={() => onRate("missed")}
-            tabIndex={study.flipped ? 0 : -1}
-          >
-            <span aria-hidden="true">0</span>
-            <strong>Non ancora</strong>
-            <small>La rivedrò alla fine · tasto 0</small>
-          </button>
-        </div>
-        <div className="study-reward-bar" aria-live="polite">
-          <span><i aria-hidden="true">↗</i><strong>{study.streak}</strong> streak</span>
-          <span><i aria-hidden="true">✦</i><strong>{study.points}</strong> punti del ripasso</span>
-          <small>
-            Spazio gira · 1 la so · 0 non ancora{keywordAvailable ? " · tieni premuto 3 per le keywords" : ""}
-          </small>
+      <section className="folder-shelf">
+        <div className="subfolder-section"><div className="section-title"><h2>Le tue cartelle</h2></div>{childFolders.length > 0 ? <div className="folder-card-grid compact">{childFolders.map((child) => <FolderCard key={child.id} folder={child} count={allDecks.filter((deck) => deck.folderId === child.id).length} onOpen={() => onOpenFolder(child.id)} onDeckDrop={(deckId) => onRequestTransfer(deckId, child.id)} />)}</div> : <p className="empty-section-copy">Questa cartella non contiene ancora sottocartelle.</p>}</div>
+        <div className="section-title folder-set-heading"><h2>I tuoi set</h2>{!selectionMode && <button className="section-select-button" type="button" onClick={() => { setSelectionMode(true); setSelectedDecks(new Set()); }}>Seleziona</button>}</div>
+        {selectionMode && <div className="batch-action-bar"><span>{selectedDecks.size} selezionati</span><button type="button" onClick={() => { setSelectionMode(false); setSelectedDecks(new Set()); }}>Annulla</button><button type="button" disabled={!selectedDecks.size} onClick={() => onMoveDecks(Array.from(selectedDecks))}>Sposta</button><button className="danger" type="button" disabled={!selectedDecks.size} onClick={() => { onDeleteDecks(Array.from(selectedDecks)); setSelectedDecks(new Set()); }}>Elimina</button></div>}
+        <div className="notebook-grid">
+          {decks.map((deck) => <Notebook key={deck.id} deck={{ ...deck, color: folder.color }} onOpen={() => selectionMode ? toggleSelected(deck.id) : onOpenDeck(deck.id)} selected={selectedDecks.has(deck.id)} selectionMode={selectionMode} onDragStartDeck={selectionMode ? (selectedDecks.has(deck.id) ? dragSelected : undefined) : (event) => { event.dataTransfer.effectAllowed = "copyMove"; event.dataTransfer.setData("application/x-lume-deck", deck.id); }} />)}
+          <button className="new-notebook" type="button" onClick={onCreateDeck}><b>＋</b><strong>Nuovo set</strong><small>Userà il colore della cartella</small></button>
         </div>
       </section>
     </div>
   );
 }
 
-function StudyCardEditModal({
-  card,
-  keywordHelp,
-  onSave,
-  onClose,
-}: {
-  card: Card;
-  keywordHelp: boolean;
-  onSave: (front: string, back: string) => void;
-  onClose: () => void;
-}) {
-  const [front, setFront] = useState(card.front);
-  const [back, setBack] = useState(card.back);
-  useEscape(onClose);
-
+function Notebook({ deck, onOpen, onDragStartDeck, selected = false, selectionMode = false }: { deck: Deck; onOpen: () => void; onDragStartDeck?: (event: React.DragEvent<HTMLButtonElement>) => void; selected?: boolean; selectionMode?: boolean }) {
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form
-        className="modal study-edit-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="study-edit-title"
-        onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSave(front, back);
-        }}
-      >
-        <div className="modal-header">
-          <div>
-            <span className="eyebrow">Modifica momentanea</span>
-            <h2 id="study-edit-title">Correggi questa flashcard</h2>
-          </div>
-          <button className="modal-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
-        </div>
-        <p className="modal-intro">
-          La sessione resta ferma qui. Dopo il salvataggio riprenderai dalla stessa carta.
-        </p>
-        <div className="study-edit-fields">
-          <RichTextEditor
-            autoFocus
-            value={front}
-            onChange={setFront}
-            label="Fronte · domanda o termine"
-            placeholder="Scrivi il fronte della carta"
-            keywordHelp={keywordHelp}
-          />
-          <RichTextEditor
-            value={back}
-            onChange={setBack}
-            label="Retro · risposta o definizione"
-            placeholder="Scrivi il retro della carta"
-            keywordHelp={keywordHelp}
-          />
-        </div>
-        <div className="modal-actions">
-          <button className="text-button" type="button" onClick={onClose}>Annulla</button>
-          <button className="primary-button" type="submit" disabled={!plainText(front) || !plainText(back)}>
-            Salva e continua
-          </button>
-        </div>
-      </form>
-    </div>
+    <button className={`${onDragStartDeck ? "notebook draggable" : "notebook"} pattern-${deck.pattern}${selected ? " selected" : ""}`} style={{ "--deck": deck.color, "--deck-text": getContrast(deck.color) } as React.CSSProperties} type="button" onClick={onOpen} draggable={Boolean(onDragStartDeck)} onDragStart={onDragStartDeck} aria-pressed={selectionMode ? selected : undefined}>
+      {selectionMode && <span className="notebook-check">{selected ? "✓" : ""}</span>}<span className="notebook-spine" /><small>{deck.community ? `Di ${deck.ownerName || "Studente Lume"}` : "Lume / study set"}</small><strong>{deck.title}</strong><i>{deck.description || "Domande e risposte"}</i><em>{String(deck.cards.length).padStart(2, "0")} flashcard{deck.community ? ` · ${deck.votes ?? 0} punti` : ""}</em>
+    </button>
   );
 }
 
-function ImportModal({
-  deck,
-  onImport,
-  onClose,
-}: {
-  deck: Deck;
-  onImport: (pairs: ImportPair[]) => void;
-  onClose: () => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [pairs, setPairs] = useState<ImportPair[]>([]);
-  const [filename, setFilename] = useState("");
-  const [error, setError] = useState("");
-  const [promptCopied, setPromptCopied] = useState(false);
-  useEscape(onClose);
-
-  const readFile = async (file?: File) => {
-    if (!file) return;
-    if (!/\.md$/i.test(file.name)) {
-      setFilename("");
-      setPairs([]);
-      setError("Puoi importare soltanto file Markdown con estensione .md.");
-      return;
-    }
-    const parsedPairs = parseStudyMarkdown(await file.text());
-    setFilename(file.name);
-    setPairs(parsedPairs);
-    setError(
-      parsedPairs.length
-        ? ""
-        : "Non ho trovato flashcard valide. Ogni riga deve usare il formato: parola :: definizione.",
-    );
-  };
-
-  const copyPrompt = async () => {
-    try {
-      await navigator.clipboard.writeText(FLASHCARD_MARKDOWN_PROMPT);
-      setPromptCopied(true);
-      setError("");
-    } catch {
-      setError("Non riesco a copiare automaticamente. Seleziona il testo del prompt e copialo manualmente.");
-    }
-  };
-
+function DeckView({ deck, folder, publicEffective, readOnly, voteBusy, onBack, onStudy, onEdit, onDelete, onVote }: { deck: Deck; folder?: Folder; publicEffective: boolean; readOnly: boolean; voteBusy: boolean; onBack: () => void; onStudy: () => void; onEdit: () => void; onDelete: () => void; onVote: (vote: -1 | 1 | 2) => void }) {
+  const [pinnedOnly, setPinnedOnly] = useState(false);
+  const pinnedCards = deck.cards.filter((card) => card.pinned);
+  const visibleCards = pinnedOnly ? pinnedCards : deck.cards;
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form
-        className="modal import-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="import-modal-title"
-        onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!pairs.some((pair) => pair.front.trim() && pair.back.trim())) return;
-          onImport(pairs);
-        }}
-      >
-        <div className="modal-header">
-          <div>
-            <span className="eyebrow">{deck.title} · importazione guidata</span>
-            <h2 id="import-modal-title">Importa flashcard da un file .md</h2>
-          </div>
-          <button className="modal-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
-        </div>
-
-        <section className="prompt-helper" aria-labelledby="prompt-helper-title">
-          <div className="prompt-helper-heading">
-            <div>
-              <span className="eyebrow">1 · Prepara il file</span>
-              <h3 id="prompt-helper-title">Fatti aiutare dal tuo LLM preferito</h3>
-            </div>
-            <p>Incolla questo prompt nel modello che preferisci insieme alla tua lista grezza di concetti.</p>
-          </div>
-          <button
-            className={`llm-prompt-card${promptCopied ? " copied" : ""}`}
-            type="button"
-            onClick={() => void copyPrompt()}
-            aria-label="Copia il prompt per creare il file Markdown"
-          >
-            <pre>{FLASHCARD_MARKDOWN_PROMPT}</pre>
-            <span className="prompt-copy-feedback" aria-live="polite">
-              {promptCopied ? "✓ Copiato negli appunti" : "Clicca il riquadro per copiare"}
-            </span>
-          </button>
-        </section>
-
-        <span className="eyebrow import-upload-step">2 · Carica il file</span>
-
-        <button
-          className="file-dropzone"
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => {
-            event.preventDefault();
-            void readFile(event.dataTransfer.files[0]);
-          }}
-        >
-          <span aria-hidden="true">↑</span>
-          <strong>{filename || "Scegli o trascina un file .md"}</strong>
-          <small>Solo Markdown (.md) · massimo consigliato 5 MB</small>
-        </button>
-        <input
-          ref={inputRef}
-          className="sr-only"
-          type="file"
-          accept=".md"
-          onChange={(event) => void readFile(event.target.files?.[0])}
-        />
-        <p className="import-format-hint">
-          Una flashcard per riga: <code>parola :: definizione</code>
-        </p>
-        {error && <p className="form-message error">{error}</p>}
-
-        {pairs.length > 0 && (
-          <>
-            <div className="import-preview-heading">
-              <div><span className="eyebrow">Anteprima modificabile</span><h3>{pairs.length} flashcard trovate</h3></div>
-              <button type="button" onClick={() => setPairs((current) => [...current, { front: "", back: "" }])}>
-                ＋ Aggiungi riga
-              </button>
-            </div>
-            <div className="import-preview-list">
-              {pairs.map((pair, index) => (
-                <div className="import-preview-row" key={`${index}-${filename}`}>
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                  <label>
-                    <small>Fronte</small>
-                    <textarea
-                      value={pair.front}
-                      onChange={(event) =>
-                        setPairs((current) => current.map((item, itemIndex) =>
-                          itemIndex === index ? { ...item, front: event.target.value } : item,
-                        ))
-                      }
-                      rows={2}
-                    />
-                  </label>
-                  <label>
-                    <small>Retro</small>
-                    <textarea
-                      value={pair.back}
-                      onChange={(event) =>
-                        setPairs((current) => current.map((item, itemIndex) =>
-                          itemIndex === index ? { ...item, back: event.target.value } : item,
-                        ))
-                      }
-                      rows={2}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setPairs((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-                    aria-label={`Rimuovi la flashcard ${index + 1}`}
-                  >×</button>
-                </div>
-              ))}
-            </div>
-            <div className="modal-actions sticky-actions">
-              <span>Controlla le carte prima di importarle</span>
-              <div>
-                <button className="text-button" type="button" onClick={onClose}>Annulla</button>
-                <button className="primary-button" type="submit">
-                  Aggiungi {pairs.length} flashcard a {deck.title}
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-      </form>
-    </div>
-  );
-}
-
-function AccountModal({
-  user,
-  settings,
-  configured,
-  message,
-  onSettingsChange,
-  onExport,
-  onImport,
-  onStartBreathing,
-  onEmail,
-  onGoogle,
-  onLogout,
-  onContinueLocal,
-  onClose,
-}: {
-  user: FirebaseUser | null;
-  settings: Settings;
-  configured: boolean;
-  message: string;
-  onSettingsChange: (settings: Settings) => void;
-  onExport: () => void;
-  onImport: () => void;
-  onStartBreathing: () => void;
-  onEmail: (email: string) => Promise<void>;
-  onGoogle: () => Promise<void>;
-  onLogout: () => Promise<void>;
-  onContinueLocal: () => void;
-  onClose: () => void;
-}) {
-  const [email, setEmail] = useState("");
-  const [sending, setSending] = useState(false);
-  useEscape(onClose);
-
-  return (
-    <div className="modal-backdrop auth-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="modal account-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="account-modal-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="modal-header">
-          <div>
-            <span className="eyebrow">Lume / il tuo ritmo</span>
-            <h2 id="account-modal-title">Preferenze</h2>
-          </div>
-          <button className="modal-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
-        </div>
-
-        <section className="preferences-section">
-          <div className="preferences-heading">
-            <span className="eyebrow">Profilo</span>
-            <p>Salva cartelle, set e preferenze e ritrovali sui tuoi dispositivi.</p>
-          </div>
-          {user ? (
-            <div className="signed-in-card">
-              <span aria-hidden="true">◎</span>
-              <div><small>Accesso effettuato</small><strong>{user.email}</strong></div>
-              <button type="button" onClick={() => void onLogout()}>Esci dal profilo</button>
-            </div>
-          ) : (
-            <>
-              <button className="google-auth-button" type="button" onClick={() => void onGoogle()}>
-                <span aria-hidden="true">G</span> Continua con Google
-              </button>
-              <div className="auth-divider"><span>oppure</span></div>
-              <form
-                className="email-auth-form"
-                onSubmit={async (event) => {
-                  event.preventDefault();
-                  if (!email.trim()) return;
-                  setSending(true);
-                  await onEmail(email.trim());
-                  setSending(false);
-                }}
-              >
-                <label className="field">
-                  <span>La tua email</span>
-                  <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="nome@email.it" required />
-                </label>
-                <button className="primary-button" type="submit" disabled={sending}>
-                  {sending ? "Invio…" : "Ricevi il link di accesso"}
-                </button>
-              </form>
-              {message && <p className="form-message">{message}</p>}
-              {!configured && (
-                <p className="auth-config-note">
-                  L’interfaccia è pronta. Il login online si attiverà completando il progetto Firebase.
-                </p>
-              )}
-              <button className="continue-local-button" type="button" onClick={onContinueLocal}>
-                Continua senza account <span aria-hidden="true">→</span>
-              </button>
-            </>
-          )}
-        </section>
-
-        <section className="preferences-section breathing-preferences">
-          <div className="preferences-heading">
-            <span className="eyebrow">Pause Lume</span>
-            <h3>Un respiro ogni tanto.</h3>
-            <p>Cinque respiri guidati: 5 secondi per inspirare e 5 per espirare.</p>
-          </div>
-          <div className="preference-control-row">
-            <label className="field">
-              <span>Ripeti automaticamente</span>
-              <select
-                value={settings.breathingIntervalMinutes}
-                onChange={(event) =>
-                  onSettingsChange({
-                    ...settings,
-                    breathingIntervalMinutes: Number(event.target.value),
-                  })
-                }
-              >
-                <option value={0}>Mai</option>
-                <option value={20}>Ogni 20 minuti</option>
-                <option value={30}>Ogni 30 minuti</option>
-                <option value={45}>Ogni 45 minuti</option>
-                <option value={60}>Ogni 60 minuti</option>
-              </select>
-            </label>
-            <button className="secondary-button" type="button" onClick={onStartBreathing}>
-              Respira adesso
-            </button>
-          </div>
-        </section>
-
-        <section className="preferences-section">
-          <div className="preferences-heading">
-            <span className="eyebrow">Lettura</span>
-            <h3>Un carattere più quieto.</h3>
-          </div>
-          <div className="preference-control-row reading-preferences">
-            <label className="field">
-              <span>Font generale</span>
-              <select
-                value={settings.font}
-                onChange={(event) =>
-                  onSettingsChange({
-                    ...settings,
-                    font: event.target.value as FontChoice,
-                    typographyRevision: 2,
-                  })
-                }
-              >
-                {fontOptions.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-            <div className="preference-theme-buttons" aria-label="Tema">
-              <button
-                className={settings.theme === "light" ? "selected" : ""}
-                type="button"
-                onClick={() => onSettingsChange({ ...settings, theme: "light" })}
-              >Chiaro</button>
-              <button
-                className={settings.theme === "dark" ? "selected" : ""}
-                type="button"
-                onClick={() => onSettingsChange({ ...settings, theme: "dark" })}
-              >Scuro</button>
-            </div>
-          </div>
-        </section>
-
-        <section className="preferences-section backup-preferences">
-          <div className="preferences-heading">
-            <span className="eyebrow">Le tue carte, sempre tue</span>
-            <p>Scarica un backup oppure importa quello creato su un altro dispositivo.</p>
-          </div>
-          <div>
-            <button className="secondary-button" type="button" onClick={onExport}>Esporta</button>
-            <button className="secondary-button" type="button" onClick={onImport}>Importa</button>
-          </div>
-        </section>
+    <div className="deck-page-new" style={{ "--deck": folder?.color ?? deck.color, "--deck-soft": tint(folder?.color ?? deck.color, 0.9) } as React.CSSProperties}>
+      <button className="back-link" type="button" onClick={onBack}>← {readOnly ? "Esplora" : folder?.title ?? "Il mio spazio"}</button>
+      <section className="deck-overview">
+        <Notebook deck={{ ...deck, color: folder?.color ?? deck.color }} onOpen={() => undefined} />
+        <div><span>{publicEffective ? readOnly ? `Set pubblico · ${deck.ownerName || "Comunità Lume"}` : "Set pubblico" : "Set privato"}</span><h1>{deck.title}</h1><p>{deck.description || "Domande e risposte"}</p><dl><div><dt>Flashcards</dt><dd>{deck.cards.length}</dd></div><div><dt>Ordine</dt><dd>{deck.order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{deck.direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Modalità</dt><dd>{deck.keywordHelp ? "Keyword Help" : "Ripasso normale"}</dd></div></dl><div className="deck-actions"><button className="primary-dark" type="button" onClick={onStudy}>Studia il set</button>{!readOnly && <button className="outline-button" type="button" onClick={onEdit}>Modifica</button>}</div>{publicEffective && <div className="public-vote"><span>Valuta questo set pubblico</span><button disabled={voteBusy} className={deck.userVote === -1 ? "active" : ""} type="button" onClick={() => onVote(-1)} aria-label="Non mi piace"><i className="thumb-icon thumb-down" /></button><button disabled={voteBusy} className={deck.userVote === 1 ? "active" : ""} type="button" onClick={() => onVote(1)} aria-label="Mi piace"><i className="thumb-icon" /></button><button disabled={voteBusy} className={deck.userVote === 2 ? "active" : ""} type="button" onClick={() => onVote(2)} aria-label="Mi piace molto"><span className="double-thumb"><i className="thumb-icon" /><i className="thumb-icon" /></span></button><strong>{deck.votes ?? 0}</strong>{typeof deck.ratingsCount === "number" && <small>{deck.ratingsCount} valutazioni</small>}</div>} {!readOnly && <div className="deck-secondary-actions"><button type="button" disabled={!pinnedCards.length} onClick={() => setPinnedOnly((active) => !active)}>{pinnedOnly ? "Mostra tutte" : `Pin da rivedere (${pinnedCards.length})`}</button><button className="danger-link" type="button" onClick={onDelete}>Elimina set</button></div>}</div>
       </section>
+      <section className="card-list"><div className="section-title"><h2>{pinnedOnly ? "Pin da rivedere" : "Le flashcards"}</h2><span>Domanda davanti · risposta dietro</span></div>{visibleCards.map((card, index) => <article key={card.id}><b>{String(index + 1).padStart(2, "0")}</b><RichText value={card.front} /><RichText value={card.back} />{card.pinned && <span className="card-list-pin">Pin · da correggere</span>}{card.pinned && card.pinComment && <p className="pin-comment">{card.pinComment}</p>}</article>)}{pinnedOnly && !visibleCards.length && <p className="empty-copy">Non hai ancora messo pin in questo set.</p>}</section>
     </div>
   );
 }
 
-function FolderModal({
-  folder,
-  onSave,
-  onClose,
-}: {
-  folder?: Folder;
-  onSave: (data: Omit<Folder, "id" | "createdAt">) => void;
-  onClose: () => void;
-}) {
+function CreateMenu({ onFolder, onDeck, onClose }: { onFolder: () => void; onDeck: () => void; onClose: () => void }) {
+  return (
+    <div className="popover-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="create-popover"><span>Cosa vuoi creare?</span><button type="button" onClick={onFolder}><i className="create-folder-icon" /><strong>Una cartella</strong><small>Può contenere altre cartelle e set</small></button><button type="button" onClick={onDeck}><i className="create-deck-icon" /><strong>Un set di flashcards</strong><small>Può vivere da solo o dentro una cartella</small></button></section>
+    </div>
+  );
+}
+
+function FolderCreator({ folder, folders, defaultParentId, parentPublic, onSave, onClose }: { folder?: Folder; folders: Folder[]; defaultParentId: string | null; parentPublic: (id: string | null) => boolean; onSave: (data: Omit<Folder, "id" | "createdAt">, editId?: string) => void; onClose: () => void }) {
   const [title, setTitle] = useState(folder?.title ?? "");
-  const [color, setColor] = useState(folder?.color ?? "#e8c47d");
-  const [visibility, setVisibility] = useState<Folder["visibility"]>(
-    folder?.visibility ?? "private",
-  );
-  useEscape(onClose);
-
+  const [parentId, setParentId] = useState<string | null>(folder?.parentId ?? defaultParentId);
+  const [color, setColor] = useState(folder?.color ?? colors[0]);
+  const [visibility, setVisibility] = useState<Visibility>(folder?.visibility ?? "private");
+  const inheritedPublic = parentPublic(parentId);
+  const blockedParents = useMemo(() => {
+    const blocked = new Set<string>();
+    if (!folder) return blocked;
+    blocked.add(folder.id);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      folders.forEach((item) => {
+        if (item.parentId && blocked.has(item.parentId) && !blocked.has(item.id)) {
+          blocked.add(item.id);
+          changed = true;
+        }
+      });
+    }
+    return blocked;
+  }, [folder, folders]);
+  const possibleParents = folders.filter((item) => !blockedParents.has(item.id));
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form
-        className="modal folder-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="folder-modal-title"
-        onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!title.trim()) return;
-          onSave({
-            title: title.trim(),
-            color,
-            emoji: folder?.emoji ?? "",
-            visibility,
-          });
-        }}
-      >
-        <div className="modal-header">
-          <div>
-            <span className="eyebrow">Organizza i tuoi set</span>
-            <h2 id="folder-modal-title">{folder ? "Modifica la cartella" : "Crea una cartella"}</h2>
-          </div>
-          <button className="modal-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
-        </div>
-        <div className="form-grid">
-          <label className="field full">
-            <span>Nome della cartella</span>
-            <input
-              autoFocus
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="Es. Esami di settembre"
-              maxLength={60}
-              required
-            />
-          </label>
-        </div>
-        <div className="folder-color-row">
-          <label>
-            <span>Colore della cartella</span>
-            <input type="color" value={color} onChange={(event) => setColor(event.target.value)} />
-          </label>
-          <div className="folder-mini-preview" style={{ "--folder": color } as React.CSSProperties}>
-            <i aria-hidden="true" /><strong>{title || "La tua cartella"}</strong>
-          </div>
-        </div>
-        <label className={visibility === "public" ? "feature-option folder-public-option selected" : "feature-option folder-public-option"}>
-          <input
-            type="checkbox"
-            checked={visibility === "public"}
-            onChange={(event) => setVisibility(event.target.checked ? "public" : "private")}
-          />
-          <span className="public-folder-mark" aria-hidden="true" />
-          <div>
-            <strong>Cartella pubblica</strong>
-            <small>Tutti i set contenuti possono comparire in Esplora. Puoi renderla privata quando vuoi.</small>
-          </div>
-        </label>
-        {visibility === "public" && (
-          <p className="public-setting-note">
-            I set della cartella sono visibili nel catalogo. Per condividerli online con altre persone, accedi al profilo.
-          </p>
-        )}
-        <div className="modal-actions">
-          <button className="text-button" type="button" onClick={onClose}>Annulla</button>
-          <button className="primary-button" type="submit">{folder ? "Salva modifiche" : "Crea cartella"}</button>
-        </div>
-      </form>
+    <div className="creator-layer">
+      <header className="creator-header"><button type="button" onClick={onClose}>Lume</button><div><span>Nuova struttura</span><h2>{folder ? "Modifica cartella" : "Crea una cartella"}</h2></div><button className="round-close" type="button" onClick={onClose} aria-label="Chiudi">×</button></header>
+      <main className="folder-creator-main">
+        <section className="creator-fields"><span className="step-number">01</span><h1>Dai forma al tuo archivio.</h1><p>Una cartella può contenere set e altre cartelle, senza limiti di profondità.</p>
+          <label className="field-clean"><span>Nome della cartella</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Es. Psicologia" maxLength={60} /></label>
+          <label className="field-clean"><span>Dentro a</span><select value={parentId ?? ""} onChange={(event) => setParentId(event.target.value || null)}><option value="">Il mio spazio — livello principale</option>{possibleParents.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+          <fieldset className="clean-fieldset"><legend>Colore</legend><div className="color-palette">{colors.map((option) => <button className={color === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => setColor(option)} aria-label={`Colore ${option}`} />)}<label className="custom-color"><input type="color" value={color} onChange={(event) => setColor(event.target.value)} /><span>＋</span></label></div></fieldset>
+          <fieldset className="clean-fieldset"><legend>Visibilità</legend>{inheritedPublic ? <div className="inherit-note"><strong>Pubblica tramite la cartella superiore</strong><small>Una cartella inserita in uno spazio pubblico non può contenere elementi privati.</small></div> : <div className="segmented"><button className={visibility === "private" ? "selected" : ""} type="button" onClick={() => setVisibility("private")}>Privata</button><button className={visibility === "public" ? "selected" : ""} type="button" onClick={() => setVisibility("public")}>Pubblica</button></div>}<p className="privacy-explanation">{inheritedPublic || visibility === "public" ? "Tutti i set e tutte le sottocartelle al suo interno saranno pubblici." : "I contenuti resteranno privati. Potrai rendere pubblici singoli set uno per uno."}</p></fieldset>
+        </section>
+        <aside className="folder-live-preview"><span>Anteprima</span><div className="large-folder-object" style={{ "--folder": color, "--folder-text": getContrast(color) } as React.CSSProperties}><i className="preview-paper one" /><i className="preview-paper two" /><span className="preview-folder-tab" /><div><small>{inheritedPublic || visibility === "public" ? "Cartella pubblica" : "Cartella privata"}</small><strong>{title || "La tua cartella"}</strong><em>{parentId ? `Dentro ${folders.find((item) => item.id === parentId)?.title}` : "Livello principale"}</em></div></div></aside>
+      </main>
+      <footer className="creator-footer"><button type="button" onClick={onClose}>Annulla</button><button className="primary-dark" type="button" disabled={!title.trim()} onClick={() => onSave({ title: title.trim(), parentId, color, visibility: inheritedPublic ? "public" : visibility }, folder?.id)}>{folder ? "Salva modifiche" : "Crea la cartella"} →</button></footer>
     </div>
   );
 }
 
-function DeckModal({
-  deck,
-  folders,
-  defaultFolderId,
-  defaultFont,
-  onSave,
-  onClose,
-}: {
-  deck?: Deck;
-  folders: Folder[];
-  defaultFolderId: string;
-  defaultFont: FontChoice;
-  onSave: (data: Omit<Deck, "id" | "cards" | "createdAt">) => void;
-  onClose: () => void;
-}) {
+function LLMPromptModal({ keywordHelp, onClose, onCopied }: { keywordHelp: boolean; onClose: () => void; onCopied: (message: string) => void }) {
+  const copy = async (prompt: string, label: string) => {
+    await navigator.clipboard.writeText(prompt);
+    onCopied(`${label} copiato negli appunti.`);
+    onClose();
+  };
+  return <div className="modal-backdrop-clean llm-prompt-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="llm-prompt-modal"><button className="round-close" type="button" onClick={onClose}>×</button><span>Prepara il set con un LLM</span><h2>Scegli il prompt, leggilo e poi copialo.</h2><p>Incollalo nell’LLM che preferisci insieme ai tuoi appunti. Il file risultante sarà già nel formato <code>parola :: definizione</code>.</p><div className="prompt-choice-grid"><article><h3>Prompt essenziale</h3><p>Per definizioni pulite senza indizi evidenziati.</p><pre>{markdownPrompt}</pre><button className={keywordHelp ? "outline-button" : "primary-dark"} type="button" onClick={() => { void copy(markdownPrompt, "Prompt essenziale"); }}>Copia questo prompt</button></article><article><h3>Prompt con Keyword Help</h3><p>Sceglie da 1 a massimo 3 pilastri concettuali e li prepara in neretto.</p><pre>{keywordMarkdownPrompt}</pre><button className={keywordHelp ? "primary-dark" : "outline-button"} type="button" onClick={() => { void copy(keywordMarkdownPrompt, "Prompt Keyword Help"); }}>Copia questo prompt</button></article></div><small>Alternativa manuale: attiva Keyword Help e metti in neretto le parole-chiave direttamente nell’editor.</small></section></div>;
+}
+
+function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSave, onClose }: { deck?: Deck; folders: Folder[]; defaultFolderId: string | null; folderPublic: (id: string | null) => boolean; theme: "light" | "dark"; onSave: (data: Omit<Deck, "id" | "createdAt">, editId?: string) => void; onClose: () => void }) {
+  type DraftPair = { id?: string; front: string; back: string; pinned?: boolean; pinComment?: string };
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [title, setTitle] = useState(deck?.title ?? "");
   const [description, setDescription] = useState(deck?.description ?? "");
-  const [color, setColor] = useState(deck?.color ?? palettes[0].color);
-  const [cardColor, setCardColor] = useState(deck?.cardColor ?? palettes[0].card);
-  const [font, setFont] = useState<FontChoice>(deck?.font ?? defaultFont);
-  const [folderId, setFolderId] = useState(deck?.folderId ?? defaultFolderId);
-  const [visibility, setVisibility] = useState<Deck["visibility"]>(deck?.visibility ?? "private");
+  const [folderId, setFolderId] = useState<string | null>(deck?.folderId ?? defaultFolderId);
+  const [color, setColor] = useState(deck?.color ?? colors[0]);
+  const [pattern, setPattern] = useState<Pattern>(deck?.pattern ?? "plain");
+  const [visibility, setVisibility] = useState<Visibility>(deck?.visibility ?? "private");
   const [keywordHelp, setKeywordHelp] = useState(deck?.keywordHelp ?? false);
+  const [keywordInfoOpen, setKeywordInfoOpen] = useState(false);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [order, setOrder] = useState<Order>(deck?.order ?? "sequential");
+  const [direction, setDirection] = useState<Direction>(deck?.direction ?? "front-first");
+  const [cardColorMode, setCardColorMode] = useState<CardColorMode>(deck?.cardColorMode ?? "single");
+  const [cardColor, setCardColor] = useState(deck?.cardColor ?? deck?.color ?? colors[0]);
+  const [pairs, setPairs] = useState<DraftPair[]>(deck?.cards.length ? deck.cards.map((card) => ({ id: card.id, front: card.front, back: card.back, pinned: card.pinned, pinComment: card.pinComment })) : [{ front: "", back: "" }]);
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const [previewBack, setPreviewBack] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
+  const [dragImportActive, setDragImportActive] = useState(false);
+  const [deletingPairKey, setDeletingPairKey] = useState<string | null>(null);
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false);
+  const [abandonOpen, setAbandonOpen] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const selectedFolder = folders.find((folder) => folder.id === folderId);
+  const effectiveColor = selectedFolder?.color ?? color;
+  const inheritedPublic = folderPublic(folderId);
+  const completePairs = pairs.filter((pair) => plainText(pair.front) && plainText(pair.back));
+  const previewPair = completePairs[previewIndex] ?? completePairs[0];
+  const previewFirst = previewPair ? (direction === "front-first" ? previewPair.front : previewPair.back) : "";
+  const previewSecond = previewPair ? (direction === "front-first" ? previewPair.back : previewPair.front) : "";
 
-  useEscape(onClose);
+  useEffect(() => {
+    if (!importMessage) return;
+    const timeout = window.setTimeout(() => setImportMessage(""), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [importMessage]);
 
+  const goToStep = (next: 1 | 2 | 3) => {
+    if (next === 3) {
+      setPreviewIndex(0);
+      setPreviewBack(false);
+    }
+    setStep(next);
+  };
+
+  useEffect(() => {
+    document.querySelector(".deck-creator-stage")?.scrollTo({ top: 0 });
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== 3 || !previewPair) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.code === "Space") { event.preventDefault(); setPreviewBack((value) => !value); }
+      if (event.key === "ArrowLeft") { event.preventDefault(); setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); }
+      if (event.key === "ArrowRight" || event.key === "1" || event.key === "2") { event.preventDefault(); setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [step, previewPair, completePairs.length, direction]);
+
+  const updatePair = (index: number, field: "front" | "back", value: string) => setPairs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item));
+  const addPair = () => {
+    const nextIndex = pairs.length;
+    setPairs((current) => [...current, { front: "", back: "" }]);
+    window.setTimeout(() => document.getElementById(`front-${nextIndex}`)?.focus(), 0);
+  };
+  const deletePair = (index: number) => {
+    const pairKey = pairs[index]?.id ?? `draft-${index}`;
+    setDeletingPairKey(pairKey);
+    window.setTimeout(() => {
+      setPairs((current) => current.length === 1 ? [{ front: "", back: "" }] : current.filter((_, itemIndex) => itemIndex !== index));
+      setDeletingPairKey(null);
+    }, 280);
+  };
+  const importMarkdown = async (file?: File) => {
+    if (!file || !/\.md$/i.test(file.name)) { setImportMessage("Puoi importare soltanto un file .md."); return; }
+    const parsed = (await file.text()).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+      const separator = line.indexOf("::");
+      return separator > 0 ? { front: normalizeRichText(line.slice(0, separator).trim()), back: normalizeRichText(line.slice(separator + 2).trim()) } : null;
+    }).filter((item): item is DraftPair => Boolean(item?.front && item.back));
+    if (!parsed.length) { setImportMessage("Nessuna coppia valida. Usa parola :: definizione su ogni riga."); return; }
+    setPairs(parsed);
+    setPreviewIndex(0);
+    setImportMessage(`${parsed.length} flashcard importate.`);
+  };
+  const submit = () => {
+    if (!title.trim() || !completePairs.length) return;
+    const oldCards = new Map(deck?.cards.map((card) => [card.id, card]) ?? []);
+    onSave({ title: title.trim(), description: description.trim(), folderId, color: effectiveColor, pattern, visibility: inheritedPublic ? "public" : visibility, keywordHelp, order, direction, cardColorMode, cardColor, lastStudied: deck?.lastStudied, cards: completePairs.map((item) => { const previous = item.id ? oldCards.get(item.id) : undefined; return { id: item.id ?? makeId("card"), front: normalizeRichText(item.front), back: normalizeRichText(item.back), known: previous?.known ?? 0, missed: previous?.missed ?? 0, pinned: item.pinned ?? previous?.pinned, pinComment: item.pinComment ?? previous?.pinComment ?? "" }; }) }, deck?.id);
+  };
+
+  return <div className="creator-layer deck-creator"><header className="creator-header"><button type="button" onClick={() => setAbandonOpen(true)}>Lume</button><div><span>Percorso guidato</span><h2>{deck ? "Modifica set" : "Nuovo set"}</h2></div><button className="round-close" type="button" onClick={() => setAbandonOpen(true)} aria-label="Chiudi">×</button></header><nav className="creator-stepper" aria-label={`Passaggio ${step} di 3`}>{([1, 2, 3] as const).map((number) => <button className={step === number ? "active" : step > number ? "complete" : ""} type="button" key={number} onClick={() => { if (number === 1 || (number === 2 && title.trim()) || (number === 3 && completePairs.length)) goToStep(number); }}><b>{number}</b><span>{number === 1 ? "Dettagli" : number === 2 ? "Flashcards" : "Riepilogo"}</span></button>)}</nav><main className="deck-creator-stage">
+    {step === 1 && <div className="deck-details-layout"><section className="creator-fields"><span className="step-number">01</span><h1>Il tuo set, come lo vuoi tu.</h1><p>Scegli dove vive e come appare. Se entra in una cartella, ne eredita il colore.</p><label className="field-clean"><span>Titolo del set</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Es. Storia del design" /></label><label className="field-clean"><span>Descrizione</span><input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Es. Movimenti, oggetti e progettisti" /></label><label className="field-clean"><span>Cartella facoltativa</span><select value={folderId ?? ""} onChange={(event) => setFolderId(event.target.value || null)}><option value="">Nessuna cartella — set indipendente</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.title}</option>)}</select></label>{!selectedFolder && <fieldset className="clean-fieldset"><legend>Colore del set indipendente</legend><div className="color-palette">{colors.map((option) => <button className={color === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => { setColor(option); setCardColor(option); }} aria-label={`Colore ${option}`} />)}<label className="custom-color"><input type="color" value={color} onChange={(event) => { setColor(event.target.value); setCardColor(event.target.value); }} /><span>＋</span></label></div></fieldset>}<fieldset className="clean-fieldset"><legend>Decorazione del quaderno</legend><div className="pattern-picker">{patterns.map((option) => <button className={pattern === option.value ? `selected pattern-${option.value}` : `pattern-${option.value}`} type="button" key={option.value} onClick={() => setPattern(option.value)}><i style={{ "--deck": effectiveColor } as React.CSSProperties} /><span>{option.label}</span></button>)}</div></fieldset><fieldset className="clean-fieldset"><legend>Visibilità</legend>{inheritedPublic ? <div className="inherit-note"><strong>Pubblico tramite la cartella</strong><small>Tutto ciò che entra in questa cartella è pubblico.</small></div> : <div className="segmented"><button className={visibility === "private" ? "selected" : ""} type="button" onClick={() => setVisibility("private")}>Privato</button><button className={visibility === "public" ? "selected" : ""} type="button" onClick={() => setVisibility("public")}>Pubblico</button></div>}</fieldset></section><aside className="notebook-preview-column"><span>Anteprima copertina</span><Notebook deck={{ id: "preview", folderId, title: title || "Il tuo set", description: description || "Domande e risposte", color: effectiveColor, pattern, visibility, keywordHelp, order, direction, cardColorMode, cardColor, cards: completePairs.map((item, index) => ({ id: String(index), front: item.front, back: item.back, known: 0, missed: 0 })), createdAt: 0 }} onOpen={() => undefined} /><p>{selectedFolder ? `Il colore segue “${selectedFolder.title}”. Puoi personalizzare il pattern.` : "Questo set è indipendente: colore e pattern sono soltanto suoi."}</p></aside></div>}
+    {step === 2 && <div className="card-writing-layout vertical-editor" onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragImportActive(true); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragImportActive(false); }} onDrop={(event) => { event.preventDefault(); setDragImportActive(false); void importMarkdown(event.dataTransfer.files?.[0]); }}><aside className="set-options-panel sticky-options"><div className="readonly-set-title"><span>Titolo del set</span><h2>{title}</h2></div><fieldset className="clean-fieldset"><legend>Ordine predefinito</legend><div className="segmented"><button className={order === "sequential" ? "selected" : ""} type="button" onClick={() => setOrder("sequential")}>In ordine</button><button className={order === "random" ? "selected" : ""} type="button" onClick={() => setOrder("random")}>Casuale</button></div></fieldset><fieldset className="clean-fieldset"><legend>Verso predefinito</legend><div className="segmented"><button className={direction === "front-first" ? "selected" : ""} type="button" onClick={() => setDirection("front-first")}>Fronte prima</button><button className={direction === "back-first" ? "selected" : ""} type="button" onClick={() => setDirection("back-first")}>Retro prima</button></div></fieldset><div className="keyword-option"><label className="toggle-row"><input type="checkbox" checked={keywordHelp} onChange={(event) => setKeywordHelp(event.target.checked)} /><i /><span><b>Keyword Help</b><small>Usa il neretto come indizio.</small></span></label><button className="help-dot" type="button" onClick={() => setKeywordInfoOpen((open) => !open)} aria-label="Come funziona Keyword Help">?</button></div>{keywordInfoOpen && <p className="keyword-info">Durante lo studio, tieni premuta la barra spaziatrice: il testo si sfoca e restano leggibili soltanto le parole messe in neretto.</p>}<button className="llm-set-button" type="button" onClick={() => setPromptOpen(true)}><span>Prepara il set con un LLM</span><small>Visualizza e copia il prompt adatto.</small></button><button className="sidebar-import-button" type="button" onClick={() => fileRef.current?.click()}>↑ Importa o trascina file .md</button><input ref={fileRef} className="sr-only" type="file" accept=".md" onChange={(event) => { void importMarkdown(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importMessage && <p className="import-status">{importMessage}</p>}<button className="delete-all-cards" type="button" onClick={() => setDeleteAllOpen(true)}>Elimina tutte le flashcards</button></aside><section className="card-editor-workspace vertical-card-workspace"><div className="editor-toolbar-title"><div><span>Flashcards</span><strong>{completePairs.length} pronte</strong></div></div><div className="card-pair-list">{pairs.map((pair, index) => <article className={(pair.id ?? `draft-${index}`) === deletingPairKey ? "card-pair-editor removing" : "card-pair-editor"} key={pair.id ?? `draft-${index}`}><header><span>Flashcard {String(index + 1).padStart(2, "0")}</span><button type="button" onClick={() => deletePair(index)} aria-label={`Elimina flashcard ${index + 1}`}>×</button></header><RichEditor id={`front-${index}`} label="Fronte" value={pair.front} placeholder="Scrivi la domanda o il concetto principale…" autoFocus={index === 0} onChange={(value) => updatePair(index, "front", value)} onTab={() => document.getElementById(`back-${index}`)?.focus()} /><RichEditor id={`back-${index}`} label="Retro" value={pair.back} placeholder="Scrivi la risposta o la spiegazione…" onChange={(value) => updatePair(index, "back", value)} onTab={() => document.getElementById("add-pair")?.focus()} /></article>)}</div><button id="add-pair" className="add-pair" type="button" onClick={addPair}>＋ Aggiungi un’altra coppia</button></section>{dragImportActive && <div className="md-drop-overlay"><div><strong>Rilascia qui il file .md</strong><span>Le flashcards verranno importate automaticamente.</span></div></div>}</div>}
+    {step === 3 && <div className="summary-layout refined-summary"><aside className="summary-data"><span>Riepilogo</span><h2>{title}</h2><dl><div><dt>Ordine</dt><dd>{order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Keyword Help</dt><dd>{keywordHelp ? "Attivo" : "Disattivo"}</dd></div></dl><fieldset className="clean-fieldset"><legend>Colore delle flashcards</legend><div className="segmented"><button className={cardColorMode === "single" ? "selected" : ""} type="button" onClick={() => setCardColorMode("single")}>Colore fisso</button><button className={cardColorMode === "random" ? "selected" : ""} type="button" onClick={() => setCardColorMode("random")}>Casuale a ogni studio</button></div>{cardColorMode === "single" && <div className="color-palette compact">{cardColors.map((option) => <button className={cardColor === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => setCardColor(option)} aria-label={`Colore flashcard ${option}`} />)}</div>}</fieldset></aside><section className="study-simulation"><span className="step-number">03</span><h1>Prova il tuo set.</h1><p>Spazio gira la carta; 1 e 2 passano alla successiva.</p>{previewPair && <div className="summary-card-wrap"><button key={previewIndex} className={previewBack ? "simulation-card flipped" : "simulation-card"} type="button" onClick={() => setPreviewBack((back) => !back)}><span className="simulation-card-inner"><span className="simulation-face simulation-front" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.46) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.86) }}><small>{direction === "front-first" ? "Fronte" : "Retro"}</small><RichText value={previewFirst} /><em>Clicca o premi spazio per girare</em></span><span className="simulation-face simulation-back" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.3) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.72) }}><small>{direction === "front-first" ? "Retro" : "Fronte"}</small><RichText value={previewSecond} /><em>Clicca o premi spazio per girare</em></span></span></button></div>}<div className="simulation-key-legend two"><span><b>1</b> La so</span><span><b>2</b> Non ancora</span></div><div className="simulation-controls"><button type="button" disabled={previewIndex === 0} onClick={() => { setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); }}>←</button><span>{previewIndex + 1} di {completePairs.length}</span><button type="button" disabled={previewIndex >= completePairs.length - 1} onClick={() => { setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); }}>→</button></div><button className="primary-dark save-summary" type="button" onClick={submit}>{deck ? "Salva modifiche" : "Salva il set"}</button></section></div>}
+  </main>{promptOpen && <LLMPromptModal keywordHelp={keywordHelp} onClose={() => setPromptOpen(false)} onCopied={setImportMessage} />}{deleteAllOpen && <DeleteCardsConfirmModal count={pairs.filter((pair) => plainText(pair.front) || plainText(pair.back)).length} onClose={() => setDeleteAllOpen(false)} onConfirm={() => { setPairs([{ front: "", back: "" }]); setDeleteAllOpen(false); }} />}{abandonOpen && <AbandonCreatorModal onClose={() => setAbandonOpen(false)} onConfirm={onClose} />}</div>;
+}
+
+function AbandonCreatorModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="delete-confirm-modal abandon-confirm-modal"><button className="round-close" type="button" onClick={onClose}>×</button><h2>Abbandonare la creazione del set?</h2><p>Le modifiche non salvate e le flashcards inserite in questa sessione andranno perse.</p><div><button className="outline-button" type="button" onClick={onClose}>Riprendi</button><button className="destructive-button" type="button" onClick={onConfirm}>Abbandona</button></div></section></div>;
+}
+
+function DeleteCardsConfirmModal({ count, onConfirm, onClose }: { count: number; onConfirm: () => void; onClose: () => void }) {
+  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="delete-confirm-modal"><button className="round-close" type="button" onClick={onClose}>×</button><h2>Eliminare tutte le flashcards?</h2><p>Verranno eliminate {count} flashcard da questo set. Il set resterà disponibile ma sarà vuoto.</p><div><button className="outline-button" type="button" onClick={onClose}>Annulla</button><button className="destructive-button" type="button" onClick={onConfirm}>Elimina le flashcards</button></div></section></div>;
+}
+
+function RichEditor({ id, label, value, placeholder, autoFocus, onChange, onTab }: { id: string; label: string; value: string; placeholder: string; autoFocus?: boolean; onChange: (value: string) => void; onTab?: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ref.current && ref.current.innerHTML !== value) ref.current.innerHTML = value;
+  }, [id, value]);
+  useEffect(() => {
+    if (autoFocus) window.setTimeout(() => ref.current?.focus(), 0);
+  }, [id, autoFocus]);
+  const format = (command: "bold" | "italic" | "underline") => {
+    ref.current?.focus();
+    document.execCommand(command);
+    if (ref.current) onChange(ref.current.innerHTML);
+  };
+  return (
+    <div className="rich-editor-clean"><span>{label}</span><div className="rich-toolbar" aria-label={`Formattazione ${label}`}><button type="button" onMouseDown={(event) => { event.preventDefault(); format("bold"); }}><b>B</b></button><button type="button" onMouseDown={(event) => { event.preventDefault(); format("italic"); }}><i>I</i></button><button type="button" onMouseDown={(event) => { event.preventDefault(); format("underline"); }}><u>U</u></button></div><div id={id} ref={ref} className="rich-area" contentEditable suppressContentEditableWarning data-placeholder={placeholder} role="textbox" aria-label={label} onInput={(event) => onChange(event.currentTarget.innerHTML)} onKeyDown={(event) => { if (event.key === "Tab" && onTab) { event.preventDefault(); onTab(); } }} /></div>
+  );
+}
+
+function RichText({ value }: { value: string }) {
+  return <span className="rich-text" dangerouslySetInnerHTML={{ __html: value }} />;
+}
+
+function studyFontStack(font: StudyFont) {
+  if (font === "comic") return '"Comic Sans MS", "Comic Sans", cursive';
+  if (font === "helvetica") return 'Helvetica, Arial, sans-serif';
+  if (font === "serif") return 'Georgia, "Times New Roman", serif';
+  if (font === "mono") return 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+  return 'var(--font)';
+}
+
+function studyTextSize(value: string) {
+  const length = plainText(value).length;
+  if (length > 900) return "15px";
+  if (length > 650) return "17px";
+  if (length > 450) return "19px";
+  if (length > 300) return "22px";
+  if (length > 190) return "27px";
+  if (length > 110) return "33px";
+  return "clamp(34px, 4vw, 52px)";
+}
+
+function StudyScreen({ theme, state, entry, showKeywords, settingsOpen, onFlip, onKnow, onMiss, onPrevious, onNext, onPin, onPinComment, onOpenSettings, onCloseSettings, onSettingsChange, onKeywords, onRestartMissed, onExit }: { theme: "light" | "dark"; state: StudyState; entry: { deck: Deck; card: Card } | null; showKeywords: boolean; settingsOpen: boolean; onFlip: () => void; onKnow: () => void; onMiss: () => void; onPrevious: () => void; onNext: () => void; onPin: () => void; onPinComment: (value: string) => void; onOpenSettings: () => void; onCloseSettings: () => void; onSettingsChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onKeywords: () => void; onRestartMissed: () => void; onExit: () => void }) {
+  if (state.complete) return <div className="study-screen complete"><button className="study-exit" type="button" onClick={onExit}>× Esci</button><section><span>Sessione completata</span><h1>{state.known} carte ricordate.</h1><p>Streak migliore: {state.bestStreak}. Le carte difficili restano disponibili per un altro giro.</p><div><button className="primary-dark" type="button" disabled={!state.missed.length} onClick={onRestartMissed}>Ripassa le difficili ({state.missed.length})</button><button className="outline-button" type="button" onClick={onExit}>Torna al mio spazio</button></div></section></div>;
+  if (!entry) return null;
+  const keywords = extractKeywords(entry.card.back);
+  const firstValue = state.direction === "front-first" ? entry.card.front : entry.card.back;
+  const secondValue = state.direction === "front-first" ? entry.card.back : entry.card.front;
+  const baseColor = state.cardColor || entry.deck.color;
+  const cardColor = theme === "dark" ? darken(baseColor, 0.46) : tint(baseColor, 0.84);
+  const secondColor = theme === "dark" ? darken(baseColor, 0.30) : tint(baseColor, 0.72);
+  return (
+    <div className="study-screen" style={{ "--study": baseColor, "--study-soft": cardColor, "--study-back": secondColor, "--study-font": studyFontStack(state.font) } as React.CSSProperties}>
+      <header><button className="study-exit" type="button" onClick={onExit}>× Esci</button><div><strong>{entry.deck.title}</strong><span>{state.index + 1} / {state.cardIds.length}</span></div><div className="study-session-meta"><span>{state.streak} streak</span><span>{state.known} so · {state.missed.length} rivedo</span><button className={entry.card.pinned ? "pin-button pinned" : "pin-button"} type="button" onClick={onPin} aria-label={entry.card.pinned ? "Rimuovi pin dalla flashcard" : "Metti un pin alla flashcard"}><i /> <span>{entry.card.pinned ? "Con pin" : "Pin"}</span></button><button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><i><b /><b /><b /></i><span>Impostazioni</span></button></div></header>
+      <main><p>Quanto ti è sembrata familiare?</p><button key={entry.card.id} className={state.flipped ? "study-card flipped" : "study-card"} type="button" onClick={onFlip}><span className="study-card-inner"><span className="study-face study-front" style={{ "--card-font-size": studyTextSize(firstValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Domanda" : "Risposta"}</small><RichText value={firstValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span><span className="study-face study-back" style={{ "--card-font-size": studyTextSize(secondValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Risposta" : "Domanda"}</small><RichText value={secondValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span></span>{showKeywords && keywords.length > 0 && <span className="keyword-overlay" style={{ "--keyword-font-size": studyTextSize(entry.card.back) } as React.CSSProperties}><small>Keywords</small><RichText value={entry.card.back} /><em>Rilascia la barra spaziatrice per nasconderle</em></span>}</button>{entry.card.pinned && <label className="study-pin-note"><span>Nota per la revisione</span><input value={entry.card.pinComment ?? ""} onChange={(event) => onPinComment(event.target.value)} placeholder="Es. controllare la definizione o correggere un errore…" /></label>}<div className="study-navigation"><button type="button" disabled={state.index === 0} onClick={onPrevious}>← <span>Precedente</span></button><span>Usa le frecce per navigare</span><button type="button" disabled={state.index >= state.cardIds.length - 1} onClick={onNext}><span>Successiva</span> →</button></div><div className="study-actions"><button type="button" onClick={onKnow}><b>1</b><span><strong>La so</strong><small>Passa alla prossima</small></span></button><button type="button" onClick={onMiss}><b>2</b><span><strong>Non la so</strong><small>La rivedrai alla fine</small></span></button></div>{keywords.length > 0 && <button className="keyword-button" type="button" onClick={onKeywords}>Tieni premuta la barra spaziatrice · Mostra keywords</button>}<p className="study-shortcuts">1 La so · 2 Non la so · 3 Pin · ← → Naviga</p></main>
+      {settingsOpen && <StudySettings state={state} onChange={onSettingsChange} onClose={onCloseSettings} />}
+    </div>
+  );
+}
+
+function StudySettings({ state, onChange, onClose }: { state: StudyState; onChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onClose: () => void }) {
+  return <div className="study-settings-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="study-settings-panel"><button className="round-close" type="button" onClick={onClose}>×</button><span>Impostazioni di studio</span><h2>Adatta le carte al tuo modo di leggere.</h2><label><span>Font delle flashcards</span><select value={state.font} onChange={(event) => onChange({ font: event.target.value as StudyFont })}><option value="current">Attuale</option><option value="comic">Comic Sans DM</option><option value="helvetica">Helvetica</option><option value="serif">Serif</option><option value="mono">Mono</option></select></label><fieldset><legend>Ordine delle carte</legend><div className="segmented"><button className={state.order === "sequential" ? "selected" : ""} type="button" onClick={() => onChange({ order: "sequential" })}>Come create</button><button className={state.order === "random" ? "selected" : ""} type="button" onClick={() => onChange({ order: "random" })}>Casuale</button></div></fieldset><fieldset><legend>Lato mostrato per primo</legend><div className="segmented"><button className={state.direction === "front-first" ? "selected" : ""} type="button" onClick={() => onChange({ direction: "front-first" })}>Fronte</button><button className={state.direction === "back-first" ? "selected" : ""} type="button" onClick={() => onChange({ direction: "back-first" })}>Retro</button></div></fieldset><button className="primary-dark" type="button" onClick={onClose}>Applica e continua</button></section></div>;
+}
+
+function DeckTransferModal({ deck, folder, onMove, onCopy, onClose }: { deck?: Deck; folder?: Folder; onMove: () => void; onCopy: () => void; onClose: () => void }) {
+  if (!deck || !folder) return null;
+  return <div className="modal-backdrop-clean"><section className="deck-transfer-modal"><button className="round-close" type="button" onClick={onClose}>×</button><span>Sposta o crea una copia</span><h2>Portare “{deck.title}” dentro “{folder.title}”?</h2><p>Puoi spostare il set originale oppure crearne una copia indipendente nella sottocartella.</p><div><button className="outline-button" type="button" onClick={onCopy}>Crea una copia</button><button className="primary-dark" type="button" onClick={onMove}>Sposta il set</button></div></section></div>;
+}
+
+function FolderPickerModal({ folders, onSelect, onClose }: { folders: Folder[]; onSelect: (folderId: string | null) => void; onClose: () => void }) {
+  const [open, setOpen] = useState<Set<string>>(new Set(folders.filter((folder) => !folder.parentId).map((folder) => folder.id)));
+  const renderLevel = (parentId: string | null, depth = 0): React.ReactNode => folders.filter((folder) => folder.parentId === parentId).map((folder) => {
+    const hasChildren = folders.some((item) => item.parentId === folder.id);
+    const expanded = open.has(folder.id);
+    return <div className="picker-tree-group" key={folder.id}><div className="picker-tree-row" style={{ "--picker-depth": depth } as React.CSSProperties}><button className="picker-chevron" type="button" disabled={!hasChildren} onClick={() => setOpen((current) => { const next = new Set(current); if (next.has(folder.id)) next.delete(folder.id); else next.add(folder.id); return next; })}>{hasChildren ? (expanded ? "⌄" : "›") : ""}</button><button className="picker-destination" type="button" onClick={() => onSelect(folder.id)}><i style={{ "--folder": folder.color } as React.CSSProperties} /><span>{folder.title}</span></button></div>{expanded && renderLevel(folder.id, depth + 1)}</div>;
+  });
+  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="folder-picker-modal"><button className="round-close" type="button" onClick={onClose}>×</button><span>Sposta i set</span><h2>Scegli la cartella di destinazione.</h2><button className="picker-root" type="button" onClick={() => onSelect(null)}>Il mio spazio · senza cartella</button><div className="folder-picker-tree">{renderLevel(null)}</div></section></div>;
+}
+
+function DeleteConfirmModal({ request, onConfirm, onClose }: { request: DeleteRequest; onConfirm: () => void; onClose: () => void }) {
+  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="delete-confirm-modal"><button className="round-close" type="button" onClick={onClose}>×</button><h2>{request.title}</h2><p>L’operazione eliminerà anche tutto il contenuto incluso e non può essere annullata.</p><dl><div><dt>Sottocartelle</dt><dd>{request.subfolderCount}</dd></div><div><dt>Set di flashcards</dt><dd>{request.deckCount}</dd></div></dl><div><button className="outline-button" type="button" onClick={onClose}>Annulla</button><button className="destructive-button" type="button" onClick={onConfirm}>Elimina definitivamente</button></div></section></div>;
+}
+
+function FocusSetup({ minutes, onMinutes, onStart, onClose }: { minutes: number; onMinutes: (minutes: number) => void; onStart: () => void; onClose: () => void }) {
+  return <div className="modal-backdrop-clean"><section className="focus-setup"><button className="round-close" type="button" onClick={onClose}>×</button><h2>Quanto durerà la tua candela?</h2><p>Il tempo scelto indica quanto impiegherà la candela a consumarsi completamente mentre studi senza distrazioni.</p><div className="minute-options">{[15, 25, 45, 60].map((option) => <button className={minutes === option ? "selected" : ""} type="button" key={option} onClick={() => onMinutes(option)}><strong>{option}</strong><span>min</span></button>)}</div><label className="custom-focus-time"><span>Tempo di consumo personalizzato</span><div><input type="number" min="1" max="240" value={minutes} onChange={(event) => onMinutes(Math.min(240, Math.max(1, Number(event.target.value) || 1)))} /><span>minuti</span></div></label><button className="primary-dark" type="button" onClick={onStart}>Accendi la candela →</button></section></div>;
+}
+
+function FocusScreen({ remaining, duration, visible, paused, finished, onPause, onExit }: { remaining: number; duration: number; visible: boolean; paused: boolean; finished: boolean; onPause: () => void; onExit: () => void }) {
+  const progress = Math.max(0, remaining / duration);
+  const minutes = Math.floor(remaining / 60000);
+  const seconds = Math.floor((remaining % 60000) / 1000);
+  return <div className={finished ? "focus-screen finished" : "focus-screen"}><div className={visible ? "focus-time" : "focus-time hidden"}><span>{finished ? "La candela si è consumata." : "Studia senza distrazioni."}</span><strong>{String(minutes).padStart(2, "0")}:{String(seconds).padStart(2, "0")}</strong></div><div className="graphic-candle" style={{ "--wax-progress": progress } as React.CSSProperties}><span className="wax"><span className="candle-moving-head"><span className="candle-glow" /><span className="flame"><i /></span><span className="wick" /></span><i /></span><span className="smoke"><i /><i /><i /></span><span className="candle-shadow" /></div><small className="focus-hint">Premi la barra spaziatrice per nascondere il timer</small><div className="focus-controls">{!finished && <button type="button" onClick={onPause}>{paused ? "Riprendi" : "Pausa"}</button>}<button type="button" onClick={onExit}>Esci</button></div></div>;
+}
+
+function BreathingScreen({ elapsed, onExit }: { elapsed: number; onExit: () => void }) {
+  const cycle = Math.min(10, Math.floor(elapsed / 8000) + 1);
+  const inCycle = elapsed % 8000;
+  const inhale = inCycle < 4000;
+  const seconds = Math.max(1, Math.ceil((4000 - (inCycle % 4000)) / 1000));
+  return <div className="breathing-screen"><header><button type="button" onClick={onExit}>Esci</button></header><section className="breathing-copy"><strong>{seconds} secondi</strong><span>{cycle} di 10</span><p>{inhale ? "Inspira lentamente." : "Lascia andare lentamente."}</p></section><div className={inhale ? "breathing-orbit inhale" : "breathing-orbit exhale"}><i /><i /><i /><span className="tiny-candle"><b /><em /></span></div><div className="breath-progress">{Array.from({ length: 10 }, (_, index) => index + 1).map((item) => <i className={item <= cycle ? "done" : ""} key={item} />)}</div></div>;
+}
+
+function Preferences({ theme, account, cloudStatus, busy, notice, onTheme, onGoogle, onEmailLogin, onEmailRegister, onPasswordReset, onLogout, onClose }: { theme: "light" | "dark"; account: CloudAccount | null; cloudStatus: CloudStatus; busy: boolean; notice: string; onTheme: (theme: "light" | "dark") => void; onGoogle: () => void | Promise<void>; onEmailLogin: (email: string, password: string) => void | Promise<void>; onEmailRegister: (name: string, email: string, password: string) => void | Promise<void>; onPasswordReset: (email: string) => void | Promise<void>; onLogout: () => void | Promise<void>; onClose: () => void }) {
+  const [registering, setRegistering] = useState(false);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [formError, setFormError] = useState("");
+  const statusText = cloudStatus === "synced" ? "Tutto salvato online" : cloudStatus === "syncing" ? "Salvataggio in corso…" : cloudStatus === "loading" || cloudStatus === "checking" ? "Collegamento in corso…" : cloudStatus === "error" ? "Sincronizzazione da controllare" : "Accedi per attivare il salvataggio online";
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!title.trim()) return;
-    onSave({
-      title: title.trim(),
-      description: description.trim(),
-      color,
-      cardColor,
-      font,
-      folderId,
-      emoji: deck?.emoji ?? "",
-      visibility,
-      keywordHelp,
-      lastStudied: deck?.lastStudied,
-    });
+    setFormError("");
+    if (!email.trim() || !password) {
+      setFormError("Inserisci email e password.");
+      return;
+    }
+    if (registering && password.length < 6) {
+      setFormError("La password deve contenere almeno 6 caratteri.");
+      return;
+    }
+    if (registering) void onEmailRegister(name, email, password);
+    else void onEmailLogin(email, password);
   };
-
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form
-        className="modal deck-modal"
-        onSubmit={submit}
-        onMouseDown={(event) => event.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="deck-modal-title"
-      >
-        <div className="modal-header">
-          <div>
-            <span className="eyebrow">{deck ? "Personalizza il set" : "Nuovo set"}</span>
-            <h2 id="deck-modal-title">{deck ? "Modifica il set" : "Crea un set di flashcard"}</h2>
-          </div>
-          <button className="modal-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
-        </div>
-        <div className="form-grid">
-          <label className="field full">
-            <span>Nome del set</span>
-            <input
-              autoFocus
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="Es. Letteratura italiana"
-              maxLength={70}
-              required
-            />
-          </label>
-          <label className="field full">
-            <span>Una breve descrizione <small>facoltativa</small></span>
-            <input
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="Es. Autori, opere e correnti"
-              maxLength={110}
-            />
-          </label>
-          <label className="field">
-            <span>Cartella</span>
-            <select value={folderId} onChange={(event) => setFolderId(event.target.value)} required>
-              {folders.map((folder) => (
-                <option key={folder.id} value={folder.id}>{folder.title}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="set-feature-options">
-          <label className={visibility === "public" ? "feature-option selected" : "feature-option"}>
-            <input
-              type="checkbox"
-              checked={visibility === "public"}
-              onChange={(event) => setVisibility(event.target.checked ? "public" : "private")}
-            />
-            <span aria-hidden="true">◎</span>
-            <div>
-              <strong>Set pubblico</strong>
-              <small>Può comparire in Esplora ed essere studiato da altre persone.</small>
-            </div>
-          </label>
-          <label className={keywordHelp ? "feature-option selected" : "feature-option"}>
-            <input
-              type="checkbox"
-              checked={keywordHelp}
-              onChange={(event) => setKeywordHelp(event.target.checked)}
-            />
-            <span aria-hidden="true">B</span>
-            <div>
-              <strong>Keyword Help</strong>
-              <small>Le parole in neretto diventano suggerimenti durante lo studio.</small>
-            </div>
-          </label>
-        </div>
-        {visibility === "public" && (
-          <p className="public-setting-note">
-            Il set è subito visibile nel tuo catalogo. Per condividerlo online con altre persone, accedi al profilo.
-          </p>
-        )}
-        <fieldset className="palette-fieldset">
-          <legend>Scegli l’atmosfera</legend>
-          <div className="palette-list">
-            {palettes.map((palette) => (
-              <button
-                key={palette.name}
-                className={color === palette.color && cardColor === palette.card ? "selected" : ""}
-                type="button"
-                onClick={() => {
-                  setColor(palette.color);
-                  setCardColor(palette.card);
-                }}
-                aria-label={palette.name}
-                title={palette.name}
-              >
-                <i style={{ background: palette.color }} />
-                <i style={{ background: palette.card }} />
-              </button>
-            ))}
-          </div>
-        </fieldset>
-        <fieldset className="deck-font-fieldset">
-          <legend>Font del set</legend>
-          <div className="deck-font-list">
-            {fontOptions.map((option) => (
-              <button
-                key={option.value}
-                className={font === option.value ? "selected" : ""}
-                type="button"
-                onClick={() => setFont(option.value)}
-                style={{ fontFamily: option.family }}
-              >
-                <strong>Aa</strong>
-                <span>{option.label}</span>
-              </button>
-            ))}
-          </div>
-          <p>Il font verrà usato nel set e durante lo studio.</p>
-        </fieldset>
-        <div className="custom-colors">
-          <label>
-            <span>Colore set</span>
-            <input type="color" value={color} onChange={(event) => setColor(event.target.value)} />
-          </label>
-          <label>
-            <span>Colore flashcard</span>
-            <input type="color" value={cardColor} onChange={(event) => setCardColor(event.target.value)} />
-          </label>
-          <div
-            className="color-preview"
-            style={{
-              background: color,
-              color: getTextColor(color),
-              fontFamily: fontFamily(font),
-            }}
-          >
-            <span style={{ background: cardColor, color: "#2b2925" }}>L</span>
-            <strong>{title || "Il tuo set"}</strong>
-          </div>
-        </div>
-        <div className="modal-actions">
-          <button className="text-button" type="button" onClick={onClose}>Annulla</button>
-          <button className="primary-button" type="submit">{deck ? "Salva modifiche" : "Crea set"}</button>
-        </div>
-      </form>
-    </div>
-  );
+  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="preferences-modal account-preferences"><button className="round-close" type="button" onClick={onClose}>×</button><span>Preferenze</span><h2>{account ? "Il tuo spazio, sempre con te." : "Salva e pubblica con il tuo account."}</h2>
+    {account ? <section className="account-card"><div className={account.photoURL ? "account-avatar has-photo" : "account-avatar"} style={account.photoURL ? { backgroundImage: `url(${account.photoURL})` } : undefined}>{!account.photoURL && <span>{(account.displayName || account.email || "L").slice(0, 1).toUpperCase()}</span>}</div><div><strong>{account.displayName || "Account Lume"}</strong><p>{account.email}</p><small className={`cloud-state ${cloudStatus}`}>{statusText}</small></div><button className="outline-button" type="button" disabled={busy} onClick={() => { void onLogout(); }}>Esci dall’account</button></section> : <section className="account-login"><button className="google-login" type="button" disabled={busy || cloudStatus === "unavailable"} onClick={() => { void onGoogle(); }}><b>G</b>Continua con Google</button><div className="login-divider"><span>oppure con email</span></div><form onSubmit={submit}>{registering && <label><span>Nome</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="Come vuoi essere chiamata" /></label>}<label><span>Email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="nome@email.it" /></label><label><span>Password</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={registering ? "new-password" : "current-password"} placeholder="Almeno 6 caratteri" /></label>{formError && <p className="account-message error">{formError}</p>}<button className="primary-dark account-submit" type="submit" disabled={busy || cloudStatus === "unavailable"}>{busy ? "Attendi…" : registering ? "Crea account" : "Accedi"}</button></form><div className="account-links"><button type="button" onClick={() => { setRegistering((value) => !value); setFormError(""); }}>{registering ? "Hai già un account? Accedi" : "Non hai un account? Crealo"}</button>{!registering && <button type="button" disabled={!email.trim() || busy} onClick={() => { if (email.trim()) void onPasswordReset(email); }}>Password dimenticata?</button>}</div></section>}
+    {notice && <p className="account-message" aria-live="polite">{notice}</p>}
+    {cloudStatus === "unavailable" && <p className="account-message error">Il salvataggio online non è configurato in questa versione del sito.</p>}
+    <div className="preference-separator" /><label className="appearance-field"><span>Aspetto</span><select value={theme} onChange={(event) => onTheme(event.target.value as "light" | "dark")}><option value="light">Modalità chiara</option><option value="dark">Modalità scura</option></select></label><div className="preference-note"><strong>{account ? "Sincronizzazione cloud attiva" : "Puoi continuare anche senza account"}</strong><p>{account ? "Cartelle, set, progressi e preferenze di studio vengono salvati nel tuo account. I set pubblici appaiono nella biblioteca Esplora." : "Senza accesso i dati restano soltanto su questo dispositivo e non puoi votare i set pubblici."}</p></div>
+  </section></div>;
 }
 
-function CardModal({
-  deck,
-  onSave,
-  onImport,
-  onClose,
-}: {
-  deck: Deck;
-  onSave: (cards: Array<{ front: string; back: string }>) => void;
-  onImport: () => void;
-  onClose: () => void;
-}) {
-  const [pairs, setPairs] = useState([{ front: "", back: "" }]);
-  const frontEditorRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const pendingFocusIndex = useRef<number | undefined>(undefined);
-  useEscape(onClose);
-
-  useEffect(() => {
-    const index = pendingFocusIndex.current;
-    if (typeof index !== "number" || !frontEditorRefs.current[index]) return;
-    frontEditorRefs.current[index]?.focus();
-    pendingFocusIndex.current = undefined;
-  }, [pairs.length]);
-
-  const updatePair = (index: number, field: "front" | "back", value: string) => {
-    setPairs((current) =>
-      current.map((pair, pairIndex) =>
-        pairIndex === index ? { ...pair, [field]: value } : pair,
-      ),
-    );
-  };
-
-  const validCount = pairs.filter((pair) => plainText(pair.front) && plainText(pair.back)).length;
-
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <form
-        className="modal card-modal"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (validCount) onSave(pairs);
-        }}
-        onMouseDown={(event) => event.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="card-modal-title"
-      >
-        <div className="modal-header">
-          <div>
-            <span className="eyebrow">{deck.title}</span>
-            <h2 id="card-modal-title">Aggiungi flashcards</h2>
-          </div>
-          <button className="modal-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
-        </div>
-        <div className="modal-intro-row">
-          <p className="modal-intro">
-            Usa neretto, corsivo e sottolineato. {deck.keywordHelp
-              ? "In questo set il neretto identifica le parole che Keyword Help mostrerà come suggerimenti."
-              : "Puoi formattare liberamente sia il fronte sia il retro."}
-          </p>
-          <button className="secondary-button card-import-button" type="button" onClick={onImport}>
-            <span aria-hidden="true">↑</span> Importa file .md
-          </button>
-        </div>
-        <div className="pair-list">
-          {pairs.map((pair, index) => (
-            <div className="card-pair" key={index}>
-              <span className="pair-number">{String(index + 1).padStart(2, "0")}</span>
-              <RichTextEditor
-                autoFocus={index === 0}
-                inputRef={(node) => {
-                  frontEditorRefs.current[index] = node;
-                }}
-                value={pair.front}
-                onChange={(value) => updatePair(index, "front", value)}
-                label="Domanda o termine"
-                placeholder="Che cosa vuoi ricordare?"
-                keywordHelp={deck.keywordHelp}
-              />
-              <RichTextEditor
-                value={pair.back}
-                onChange={(value) => updatePair(index, "back", value)}
-                label="Risposta o definizione"
-                placeholder="Scrivi qui la risposta…"
-                keywordHelp={deck.keywordHelp}
-              />
-              {pairs.length > 1 && (
-                <button
-                  className="remove-pair"
-                  type="button"
-                  tabIndex={-1}
-                  onClick={() => setPairs((current) => current.filter((_, i) => i !== index))}
-                  aria-label={`Rimuovi la coppia ${index + 1}`}
-                >×</button>
-              )}
-            </div>
-          ))}
-        </div>
-        <button
-          className="add-pair-button"
-          type="button"
-          onClick={() => {
-            pendingFocusIndex.current = pairs.length;
-            setPairs((current) => [...current, { front: "", back: "" }]);
-          }}
-        >
-          <span aria-hidden="true">＋</span> Aggiungi un’altra coppia
-        </button>
-        <div className="modal-actions sticky-actions">
-          <span>{validCount} {validCount === 1 ? "carta pronta" : "carte pronte"}</span>
-          <div>
-            <button className="text-button" type="button" onClick={onClose}>Annulla</button>
-            <button className="primary-button" type="submit" disabled={!validCount}>Salva le carte</button>
-          </div>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function LumePanel({
-  minutes,
-  onMinutes,
-  onStartFocus,
-  onStartBreathing,
-  onClose,
-}: {
-  minutes: number;
-  onMinutes: (minutes: number) => void;
-  onStartFocus: () => void;
-  onStartBreathing: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <aside className="floating-panel lume-panel" aria-label="Standby Lume">
-      <div className="panel-header">
-        <div><span className="eyebrow">Lume</span><h3>Studia senza distrazioni.</h3></div>
-        <button type="button" onClick={onClose} aria-label="Chiudi">×</button>
-      </div>
-      <p className="lume-panel-intro">
-        Accendi la candela, lascia in disparte il resto e dedica questo tempo allo studio.
-      </p>
-      <label className="field lume-duration-field">
-        <span>Durata dello studio</span>
-        <div>
-          <input
-            type="number"
-            min={1}
-            max={180}
-            value={minutes}
-            onChange={(event) =>
-              onMinutes(Math.min(180, Math.max(1, Number(event.target.value) || 1)))
-            }
-          />
-          <small>minuti</small>
-        </div>
-      </label>
-      <div className="lume-duration-presets" aria-label="Durate rapide">
-        {[10, 25, 45, 60].map((value) => (
-          <button
-            className={minutes === value ? "selected" : ""}
-            type="button"
-            key={value}
-            onClick={() => onMinutes(value)}
-          >{value}</button>
-        ))}
-      </div>
-      <button className="primary-button lume-start-button" type="button" onClick={onStartFocus}>
-        Accendi il timer
-      </button>
-      <button className="lume-breathe-now" type="button" onClick={onStartBreathing}>
-        Oppure fai cinque respiri guidati <span aria-hidden="true">→</span>
-      </button>
-    </aside>
-  );
-}
-
-function formatClock(milliseconds: number) {
-  const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
-  const minutes = Math.floor(seconds / 60);
-  return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-function LumeStandby({
-  session,
-  onClose,
-}: {
-  session: LumeSession;
-  onClose: () => void;
-}) {
-  const [now, setNow] = useState(() => Date.now());
-  const [finished, setFinished] = useState(false);
-  const [showTimer, setShowTimer] = useState(true);
-  useEscape(onClose);
-
-  const totalMs = session.kind === "focus" ? session.durationMs : 5 * 10_000;
-  const elapsedMs = Math.min(totalMs, Math.max(0, now - session.startedAt));
-  const remainingMs = Math.max(0, totalMs - elapsedMs);
-  const focusProgress = session.kind === "focus" ? remainingMs / totalMs : 0.72;
-  const candleHeight = `${Math.max(7, focusProgress * 88)}%`;
-  const breathingCycle = Math.min(4, Math.floor(elapsedMs / 10_000));
-  const phaseElapsed = elapsedMs % 10_000;
-  const inhaling = phaseElapsed < 5_000;
-  const phaseProgress = (phaseElapsed % 5_000) / 5_000;
-  const breathScale = inhaling
-    ? 0.72 + phaseProgress * 0.34
-    : 1.06 - phaseProgress * 0.34;
-
-  useEffect(() => {
-    setNow(Date.now());
-    setFinished(false);
-    setShowTimer(true);
-    const timer = window.setInterval(() => {
-      const nextNow = Date.now();
-      setNow(nextNow);
-      if (nextNow - session.startedAt >= totalMs) {
-        setFinished(true);
-        window.clearInterval(timer);
-      }
-    }, 200);
-    return () => window.clearInterval(timer);
-  }, [session.startedAt, totalMs]);
-
-  useEffect(() => {
-    if (!finished) return;
-    const timer = window.setTimeout(onClose, session.kind === "focus" ? 1_800 : 900);
-    return () => window.clearTimeout(timer);
-  }, [finished, onClose, session.kind]);
-
-  useEffect(() => {
-    if (session.kind !== "focus") return;
-    const toggleTimer = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("button, input, textarea, select") || target?.isContentEditable)
-        return;
-      if (event.code === "Space") {
-        event.preventDefault();
-        setShowTimer((visible) => !visible);
-      }
-    };
-    window.addEventListener("keydown", toggleTimer);
-    return () => window.removeEventListener("keydown", toggleTimer);
-  }, [session.kind]);
-
-  return (
-    <section
-      className={`lume-standby ${session.kind === "breathing" ? "is-breathing" : "is-focus"} ${finished ? "is-finished" : ""}`}
-      role="dialog"
-      aria-modal="true"
-      aria-label={session.kind === "focus" ? "Timer standby Lume" : "Respirazione guidata Lume"}
-    >
-      <button className="lume-exit-button" type="button" onClick={onClose}>
-        Esci <kbd>esc</kbd>
-      </button>
-
-      <div className="lume-standby-copy" aria-live="polite">
-        <span className="eyebrow">Lume / {session.kind === "focus" ? "standby" : "respiro"}</span>
-        {session.kind === "focus" ? (
-          <>
-            <strong className={!finished && !showTimer ? "timer-hidden" : ""}>
-              {finished ? "Tempo concluso" : formatClock(remainingMs)}
-            </strong>
-            {!finished && showTimer && (
-              <small className="timer-visibility-hint">Premi la barra spaziatrice per nascondere il timer</small>
-            )}
-            <p>{finished ? "La fiamma si spegne. La sessione è conclusa." : "Questo tempo è tuo: resta con quello che stai studiando."}</p>
-          </>
-        ) : (
-          <>
-            <strong>{finished ? "Hai finito" : inhaling ? "Inspira" : "Espira"}</strong>
-            <p>{finished ? "Cinque respiri. Ora puoi tornare." : `${breathingCycle + 1} di 5 · segui il cerchio per 5 secondi`}</p>
-          </>
-        )}
-      </div>
-
-      <div className="lume-candle-stage">
-        {session.kind === "breathing" && !finished && (
-          <div
-            className="breathing-ring"
-            style={{ transform: `translate(-50%, -50%) scale(${breathScale})` }}
-            aria-hidden="true"
-          />
-        )}
-        <div
-          className="lume-candle"
-          style={{ "--candle-height": candleHeight } as React.CSSProperties}
-          aria-hidden="true"
-        >
-          <span className="candle-aura" />
-          <span className="candle-flame" />
-          <span className="candle-smoke" />
-          <span className="candle-body">
-            <i className="candle-rim" />
-            <i className="candle-wick" />
-            <i className="wax-drip wax-drip-one" />
-            <i className="wax-drip wax-drip-two" />
-            <i className="candle-shine" />
-          </span>
-          <span className="candle-shadow" />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function SettingsPanel({
-  settings,
-  onChange,
-  onExport,
-  onImport,
-  onClose,
-}: {
-  settings: Settings;
-  onChange: (settings: Settings) => void;
-  onExport: () => void;
-  onImport: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <aside className="floating-panel settings-panel" aria-label="Preferenze di lettura">
-      <div className="panel-header">
-        <div><span className="eyebrow">Il tuo modo di leggere</span><h3>Preferenze</h3></div>
-        <button type="button" onClick={onClose} aria-label="Chiudi">×</button>
-      </div>
-      <fieldset>
-        <legend>Carattere</legend>
-        <div className="font-choices">
-          {fontOptions.map((option) => (
-            <button
-              key={option.value}
-              className={settings.font === option.value ? "selected" : ""}
-              type="button"
-              onClick={() => onChange({ ...settings, font: option.value })}
-              style={{ fontFamily: option.family }}
-            >
-              <strong>Aa</strong>
-              <span>{option.label}</span>
-            </button>
-          ))}
-        </div>
-      </fieldset>
-      <fieldset>
-        <legend>Aspetto</legend>
-        <div className="appearance-choices">
-          <button className={settings.theme === "light" ? "selected" : ""} type="button" onClick={() => onChange({ ...settings, theme: "light" })}><i className="light-preview" /><span>Chiaro</span></button>
-          <button className={settings.theme === "dark" ? "selected" : ""} type="button" onClick={() => onChange({ ...settings, theme: "dark" })}><i className="dark-preview" /><span>Scuro</span></button>
-        </div>
-      </fieldset>
-      <div className="backup-section">
-        <span>Le tue carte, sempre tue</span>
-        <p>Scarica un backup o portalo su un altro dispositivo.</p>
-        <div><button type="button" onClick={onExport}>Esporta</button><button type="button" onClick={onImport}>Importa</button></div>
-      </div>
-    </aside>
-  );
-}
-
-function SoundPanel({
-  mode,
-  volume,
-  onSelect,
-  onVolume,
-  onClose,
-}: {
-  mode: SoundMode;
-  volume: number;
-  onSelect: (mode: SoundMode) => void;
-  onVolume: (volume: number) => void;
-  onClose: () => void;
-}) {
-  return (
-    <aside className="floating-panel sound-panel" aria-label="Suoni per la concentrazione">
-      <div className="panel-header">
-        <div><span className="eyebrow">Ambiente sonoro</span><h3>Trova il tuo ritmo</h3></div>
-        <button type="button" onClick={onClose} aria-label="Chiudi">×</button>
-      </div>
-      <div className="sound-list">
-        <button className={mode === "rain" ? "selected" : ""} type="button" onClick={() => onSelect(mode === "rain" ? "off" : "rain")}><span aria-hidden="true">⌇</span><div><strong>Pioggia lieve</strong><small>Rumore generato nel browser</small></div><i>{mode === "rain" ? "■" : "▶"}</i></button>
-        <button className={mode === "brown" ? "selected" : ""} type="button" onClick={() => onSelect(mode === "brown" ? "off" : "brown")}><span aria-hidden="true">≈</span><div><strong>Rumore bruno</strong><small>Caldo e uniforme</small></div><i>{mode === "brown" ? "■" : "▶"}</i></button>
-        <button className={mode === "bach" ? "selected" : ""} type="button" onClick={() => onSelect(mode === "bach" ? "off" : "bach")}><span aria-hidden="true">♩</span><div><strong>Bach · Aria</strong><small>Goldberg Variations · CC0</small></div><i>{mode === "bach" ? "■" : "▶"}</i></button>
-      </div>
-      <label className="volume-control">
-        <span aria-hidden="true">♪</span>
-        <input type="range" min="0" max="0.7" step="0.01" value={volume} onChange={(event) => onVolume(Number(event.target.value))} aria-label="Volume" />
-        <span aria-hidden="true">♫</span>
-      </label>
-      <a className="audio-credit" href="https://commons.wikimedia.org/wiki/File:Bach,_Goldberg_Variations,_Aria_(Musopen_version).ogg" target="_blank" rel="noreferrer">Registrazione CC0 via Wikimedia Commons ↗</a>
-    </aside>
-  );
-}
-
-function MobileNav({
-  view,
-  onNavigate,
-  hasFolders,
-  onCreateFolder,
-  onCreateSet,
-}: {
-  view: View;
-  onNavigate: (view: View) => void;
-  hasFolders: boolean;
-  onCreateFolder: () => void;
-  onCreateSet: () => void;
-}) {
-  const [createMenuOpen, setCreateMenuOpen] = useState(false);
-  return (
-    <nav className="mobile-nav" aria-label="Navigazione mobile">
-      <button className={view.name === "home" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "home" })}><span aria-hidden="true">⌂</span>Spazio</button>
-      <button className={view.name === "library" || view.name === "folder" || view.name === "deck" || view.name === "study" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "library" })}><span aria-hidden="true">▱</span>Cartelle</button>
-      <button
-        className="mobile-add"
-        type="button"
-        onClick={() => setCreateMenuOpen((open) => !open)}
-        aria-label="Crea cartella o set"
-        aria-expanded={createMenuOpen}
-      >＋</button>
-      <button className={view.name === "community" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "community" })}><span aria-hidden="true">⌕</span>Esplora</button>
-      {createMenuOpen && (
-        <div className="mobile-create-menu">
-          <button type="button" onClick={() => { setCreateMenuOpen(false); onCreateFolder(); }}>
-            <i aria-hidden="true" /><span><strong>Nuova cartella</strong><small>Raccogli più set</small></span>
-          </button>
-          <button type="button" disabled={!hasFolders} onClick={() => { setCreateMenuOpen(false); onCreateSet(); }}>
-            <b aria-hidden="true">Aa</b><span><strong>Nuovo set</strong><small>Scegli poi la cartella</small></span>
-          </button>
-        </div>
-      )}
-    </nav>
-  );
-}
-
-function useEscape(onClose: () => void) {
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [onClose]);
+function MobileNav({ view, onHome, onFolders, onExplore, onCreate }: { view: View; onHome: () => void; onFolders: () => void; onExplore: () => void; onCreate: () => void }) {
+  return <nav className="mobile-nav-new"><button className={view.name === "home" ? "active" : ""} type="button" onClick={onHome}><i className="icon-home" /><span>Spazio</span></button><button className={view.name === "folders" || view.name === "folder" ? "active" : ""} type="button" onClick={onFolders}><i className="icon-folder-line" /><span>Cartelle</span></button><button className="mobile-create" type="button" onClick={onCreate}>＋</button><button className={view.name === "explore" ? "active" : ""} type="button" onClick={onExplore}><i className="icon-search" /><span>Esplora</span></button></nav>;
 }

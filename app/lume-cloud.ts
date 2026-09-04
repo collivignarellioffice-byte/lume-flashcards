@@ -128,6 +128,10 @@ async function readyServices() {
   return result;
 }
 
+export async function getCloudDatabase() {
+  return (await readyServices()).db;
+}
+
 function accountFromUser(user: User): CloudAccount {
   return {
     uid: user.uid,
@@ -418,7 +422,11 @@ export function friendlyCloudError(error: unknown) {
     "auth/popup-blocked": "Il browser ha bloccato la finestra Google. Consenti i popup e riprova.",
     "auth/unauthorized-domain": "Questo indirizzo del sito deve essere autorizzato nelle impostazioni Firebase.",
     "auth/weak-password": "La password deve contenere almeno 6 caratteri.",
+    "lume/invalid-username": "Usa da 3 a 24 caratteri: lettere, numeri, punto, trattino o underscore.",
+    "lume/username-taken": "Questo nome utente è già stato scelto.",
+    "lume/class-not-found": "Il codice della classe non è valido.",
+    "lume/request-not-found": "Questa richiesta non è più disponibile.",
     "permission-denied": "Non hai il permesso di completare questa operazione.",
   };
-  return messages[code] ?? "Non è stato possibile completare l’operazione. Riprova tra poco.";
+  return messages[code] ?? (error instanceof Error && error.message ? error.message : "Non è stato possibile completare l’operazione. Riprova tra poco.");
 }

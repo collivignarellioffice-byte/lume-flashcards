@@ -2,44 +2,179 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isClassMember(classId) {
+      return signedIn() && exists(/databases/$(database)/documents/classes/$(classId)/members/$(request.auth.uid));
+    }
+
+    function isClassOwner(classId) {
+      return signedIn() && getAfter(/databases/$(database)/documents/classes/$(classId)).data.ownerId == request.auth.uid;
+    }
+
+    function joinsWithValidCode(classId) {
+      return request.resource.data.joinCode is string
+        && exists(/databases/$(database)/documents/classCodes/$(request.resource.data.joinCode))
+        && get(/databases/$(database)/documents/classCodes/$(request.resource.data.joinCode)).data.classId == classId;
+    }
+
     match /users/{userId} {
-      allow read, create, update, delete:
-        if request.auth != null && request.auth.uid == userId;
+      allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
+
+      match /notifications/{notificationId} {
+        allow read, update, delete: if signedIn() && request.auth.uid == userId;
+        allow create: if signedIn()
+          && request.resource.data.recipientId == userId
+          && request.resource.data.senderId == request.auth.uid;
+      }
 
       match /{document=**} {
-        allow read, create, update, delete:
-          if request.auth != null && request.auth.uid == userId;
+        allow read, create, update, delete: if signedIn() && request.auth.uid == userId;
       }
+    }
+
+    match /usernames/{username} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.username == username;
+      allow update: if signedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /classCodes/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid;
+      allow update, delete: if signedIn()
+        && resource.data.ownerId == request.auth.uid;
+    }
+
+    match /classes/{classId} {
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid;
+      allow read: if isClassMember(classId);
+      allow update: if isClassOwner(classId)
+        || (signedIn()
+          && !exists(/databases/$(database)/documents/classes/$(classId)/members/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/classes/$(classId)/members/$(request.auth.uid))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount'])
+          && request.resource.data.memberCount == resource.data.memberCount + 1);
+      allow delete: if isClassOwner(classId);
+
+      match /members/{memberId} {
+        allow read: if isClassMember(classId);
+        allow create: if signedIn()
+          && memberId == request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && (isClassOwner(classId) || joinsWithValidCode(classId));
+        allow update: if signedIn()
+          && (memberId == request.auth.uid || isClassOwner(classId))
+          && request.resource.data.uid == resource.data.uid;
+        allow delete: if signedIn()
+          && (memberId == request.auth.uid || isClassOwner(classId));
+      }
+
+      match /folders/{folderId} {
+        allow read: if isClassMember(classId);
+        allow create: if isClassMember(classId)
+          && request.resource.data.ownerId == request.auth.uid;
+        allow update: if isClassMember(classId)
+          && (resource.data.ownerId == request.auth.uid || isClassOwner(classId))
+          && request.resource.data.ownerId == resource.data.ownerId;
+        allow delete: if isClassMember(classId)
+          && (resource.data.ownerId == request.auth.uid || isClassOwner(classId));
+      }
+
+      match /decks/{deckId} {
+        allow read: if isClassMember(classId);
+        allow create: if isClassMember(classId)
+          && request.resource.data.ownerId == request.auth.uid;
+        allow update: if isClassMember(classId)
+          && (resource.data.ownerId == request.auth.uid || isClassOwner(classId))
+          && request.resource.data.ownerId == resource.data.ownerId;
+        allow delete: if isClassMember(classId)
+          && (resource.data.ownerId == request.auth.uid || isClassOwner(classId));
+
+        match /cards/{cardId} {
+          allow read: if isClassMember(classId);
+          allow create: if isClassMember(classId)
+            && (request.resource.data.ownerId == request.auth.uid || isClassOwner(classId));
+          allow update, delete: if isClassMember(classId)
+            && (resource.data.ownerId == request.auth.uid || isClassOwner(classId));
+        }
+      }
+
+      match /annotations/{annotationId} {
+        allow read: if isClassMember(classId);
+        allow create: if isClassMember(classId)
+          && request.resource.data.authorId == request.auth.uid;
+        allow update: if isClassMember(classId)
+          && (resource.data.authorId == request.auth.uid || isClassOwner(classId))
+          && request.resource.data.authorId == resource.data.authorId;
+        allow delete: if isClassMember(classId)
+          && (resource.data.authorId == request.auth.uid || isClassOwner(classId));
+      }
+
+      match /comments/{commentId} {
+        allow read: if isClassMember(classId);
+        allow create: if isClassMember(classId)
+          && request.resource.data.authorId == request.auth.uid;
+        allow update, delete: if isClassMember(classId)
+          && (resource.data.authorId == request.auth.uid || isClassOwner(classId));
+      }
+    }
+
+    match /copyRequests/{requestId} {
+      allow create: if signedIn()
+        && request.resource.data.requesterId == request.auth.uid;
+      allow read: if signedIn()
+        && (resource.data.requesterId == request.auth.uid || resource.data.ownerId == request.auth.uid);
+      allow update: if signedIn()
+        && request.resource.data.requesterId == resource.data.requesterId
+        && request.resource.data.ownerId == resource.data.ownerId
+        && ((resource.data.ownerId == request.auth.uid
+            && resource.data.status == 'pending'
+            && request.resource.data.status in ['approved', 'rejected'])
+          || (resource.data.requesterId == request.auth.uid
+            && resource.data.status == 'approved'
+            && request.resource.data.status == 'copied'));
+      allow delete: if signedIn()
+        && (resource.data.requesterId == request.auth.uid || resource.data.ownerId == request.auth.uid);
     }
 
     match /publicSets/{setId} {
       allow read: if true;
-      allow create: if request.auth != null
+      allow create: if signedIn()
         && request.resource.data.ownerId == request.auth.uid;
-      allow update: if request.auth != null
+      allow update: if signedIn()
         && resource.data.ownerId == request.auth.uid
         && request.resource.data.ownerId == request.auth.uid;
-      allow delete: if request.auth != null
+      allow delete: if signedIn()
         && resource.data.ownerId == request.auth.uid;
 
       match /cards/{cardId} {
         allow read: if true;
-        allow create: if request.auth != null
+        allow create: if signedIn()
           && request.resource.data.ownerId == request.auth.uid;
-        allow update: if request.auth != null
+        allow update: if signedIn()
           && resource.data.ownerId == request.auth.uid
           && request.resource.data.ownerId == request.auth.uid;
-        allow delete: if request.auth != null
+        allow delete: if signedIn()
           && resource.data.ownerId == request.auth.uid;
       }
 
       match /votes/{userId} {
         allow read: if true;
-        allow create, update: if request.auth != null
+        allow create, update: if signedIn()
           && request.auth.uid == userId
           && request.resource.data.userId == userId
           && request.resource.data.value in [-1, 1, 2];
-        allow delete: if request.auth != null && request.auth.uid == userId;
+        allow delete: if signedIn() && request.auth.uid == userId;
       }
     }
   }

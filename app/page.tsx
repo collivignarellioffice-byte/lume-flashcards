@@ -26,6 +26,39 @@ import {
   type CloudDeck,
   type CloudLibrary,
 } from "./lume-cloud";
+import {
+  addClassComment,
+  claimUsername,
+  createClass,
+  joinClass,
+  loadClasses,
+  loadClassWorkspace,
+  loadCopyRequest,
+  loadNotifications,
+  loadUsername,
+  markCopyRequestCopied,
+  markNotificationRead,
+  notifyClassContent,
+  notifyPublicRating,
+  requestClassCopy,
+  respondToCopyRequest,
+  saveClassAnnotation,
+  saveClassBundle,
+  saveClassDeck,
+  saveClassFolder,
+  toggleClassFavorite,
+  validateUsername,
+  type AnnotationFilter,
+  type ClassAnnotation,
+  type ClassComment,
+  type ClassDeck,
+  type ClassFavorite,
+  type ClassFolder,
+  type ClassItemKind,
+  type ClassWorkspace,
+  type LumeClass,
+  type LumeNotification,
+} from "./lume-classes";
 
 type Visibility = "private" | "public";
 type Pattern = "plain" | "lines" | "grid" | "waves" | "dots" | "botanical";
@@ -78,6 +111,10 @@ type Deck = {
   ownerName?: string;
   ratingsCount?: number;
   community?: boolean;
+  classId?: string;
+  shared?: boolean;
+  sharedOwnerId?: string;
+  sharedOwnerName?: string;
 };
 
 type CloudStatus = "unavailable" | "checking" | "signed-out" | "loading" | "syncing" | "synced" | "error";
@@ -86,6 +123,8 @@ type View =
   | { name: "home" }
   | { name: "folders" }
   | { name: "explore" }
+  | { name: "classes" }
+  | { name: "class"; id: string; folderId?: string | null }
   | { name: "folder"; id: string }
   | { name: "deck"; id: string };
 
@@ -328,6 +367,36 @@ function fromCloudDeck(deck: CloudDeck): Deck {
   });
 }
 
+function fromClassDeck(deck: ClassDeck, classId: string, annotations: ClassAnnotation[], uid?: string): Deck {
+  const ownAnnotations = new Map(
+    annotations
+      .filter((annotation) => annotation.authorId === uid && annotation.cardId)
+      .map((annotation) => [annotation.cardId as string, annotation]),
+  );
+  return {
+    ...fromCloudDeck(deck),
+    id: `class:${classId}:${deck.id}`,
+    folderId: deck.folderId,
+    visibility: "private",
+    classId,
+    shared: true,
+    sharedOwnerId: deck.ownerId,
+    sharedOwnerName: deck.ownerName,
+    cards: deck.cards.map((card) => {
+      const annotation = ownAnnotations.get(card.id);
+      return {
+        ...card,
+        pinned: annotation?.pinned ?? false,
+        pinComment: annotation?.note ?? "",
+      };
+    }),
+  };
+}
+
+function classSourceDeckId(deckId: string) {
+  return deckId.split(":").slice(2).join(":");
+}
+
 function cloudLibrarySnapshot(folders: Folder[], decks: Deck[], studyDays: string[], focusMinutes: number): CloudLibrary {
   return {
     folders: folders.map((folder) => ({ ...folder })),
@@ -532,6 +601,20 @@ export default function LumeApp() {
   const [timerVisible, setTimerVisible] = useState(true);
   const [breathing, setBreathing] = useState<{ startedAt: number } | null>(null);
   const [account, setAccount] = useState<CloudAccount | null>(null);
+  const [username, setUsername] = useState<string | null>(null);
+  const [usernameChecked, setUsernameChecked] = useState(false);
+  const [classes, setClasses] = useState<LumeClass[]>([]);
+  const [classWorkspace, setClassWorkspace] = useState<ClassWorkspace | null>(null);
+  const [classBusy, setClassBusy] = useState(false);
+  const [classNotice, setClassNotice] = useState("");
+  const [classDialog, setClassDialog] = useState<{ mode: "create" | "join"; code?: string } | null>(null);
+  const [classCreateMenu, setClassCreateMenu] = useState(false);
+  const [classImportOpen, setClassImportOpen] = useState(false);
+  const [classFolderCreator, setClassFolderCreator] = useState<{ classId: string; parentId: string | null; editId?: string } | null>(null);
+  const [classDeckCreator, setClassDeckCreator] = useState<{ classId: string; folderId: string | null; editId?: string } | null>(null);
+  const [annotationFilter, setAnnotationFilter] = useState<AnnotationFilter>("all");
+  const [notifications, setNotifications] = useState<LumeNotification[]>([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<CloudStatus>(cloudIsConfigured() ? "checking" : "unavailable");
   const [cloudReady, setCloudReady] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
@@ -620,6 +703,11 @@ export default function LumeApp() {
     const unsubscribe = observeAccount((nextAccount) => {
       if (!active) return;
       setAccount(nextAccount);
+      setUsername(null);
+      setUsernameChecked(false);
+      setClasses([]);
+      setClassWorkspace(null);
+      setNotifications([]);
       setCloudReady(false);
       localSnapshotRef.current = null;
       setView({ name: "home" });
@@ -635,6 +723,7 @@ export default function LumeApp() {
             cloudBaselineRef.current = null;
             publicBaselineRef.current = [];
             setCloudStatus("signed-out");
+            setUsernameChecked(true);
             applyLibrary(readStoredLibrary(libraryStoreKey(null)) ?? emptyLibrary());
             await refreshPublicDecks();
             return;
@@ -643,11 +732,18 @@ export default function LumeApp() {
           const accountStoreKey = libraryStoreKey(nextAccount.uid);
           const cached = readStoredLibraryRecord(accountStoreKey);
           applyLibrary(cached?.library ?? emptyLibrary());
-          const [stored, existingPublic] = await Promise.all([
+          const [stored, existingPublic, profileUsername, joinedClasses, alerts] = await Promise.all([
             loadPrivateLibrary(nextAccount.uid),
             loadPublicDecks(nextAccount.uid),
+            loadUsername(nextAccount.uid),
+            loadClasses(nextAccount.uid),
+            loadNotifications(nextAccount.uid),
           ]);
           if (!active) return;
+          setUsername(profileUsername);
+          setUsernameChecked(true);
+          setClasses(joinedClasses);
+          setNotifications(alerts);
           let selectedLibrary: CloudLibrary;
           const replaceLegacyDemo = stored.exists && isLegacyDemoLibrary(stored.library);
           const recoverLocalChanges = cached?.dirty === true;
@@ -669,7 +765,7 @@ export default function LumeApp() {
           const previousPublic = existingPublic
             .filter((deck) => deck.ownerId === nextAccount.uid)
             .map((deck) => ({ ...toCloudDeck(fromCloudDeck(deck)), id: deck.sourceDeckId }));
-          await syncPublicLibrary(nextAccount, previousPublic, nextPublic);
+          await syncPublicLibrary({ ...nextAccount, displayName: profileUsername ?? nextAccount.displayName }, previousPublic, nextPublic);
           cloudBaselineRef.current = selectedLibrary;
           publicBaselineRef.current = nextPublic;
           localSnapshotRef.current = JSON.stringify(selectedLibrary);
@@ -684,6 +780,7 @@ export default function LumeApp() {
           await refreshPublicDecks(nextAccount.uid);
         } catch (error) {
           if (!active) return;
+          setUsernameChecked(true);
           setCloudStatus("error");
           setAccountNotice(friendlyCloudError(error));
         }
@@ -696,6 +793,14 @@ export default function LumeApp() {
   }, [hydrated, refreshPublicDecks, applyLibrary]);
 
   useEffect(() => {
+    if (!hydrated) return;
+    const code = new URLSearchParams(window.location.search).get("join");
+    if (!code) return;
+    const timeout = window.setTimeout(() => setClassDialog({ mode: "join", code }), 0);
+    return () => window.clearTimeout(timeout);
+  }, [hydrated]);
+
+  useEffect(() => {
     if (!hydrated || !account || !cloudReady) return;
     const timeout = window.setTimeout(() => {
       const snapshot = cloudLibrarySnapshot(folders, decks, studyDays, focusMinutes);
@@ -704,7 +809,7 @@ export default function LumeApp() {
         setCloudStatus("syncing");
         const nextPublic = publicDecksFromLibrary(snapshot);
         await syncPrivateLibrary(account, cloudBaselineRef.current, snapshot);
-        await syncPublicLibrary(account, publicBaselineRef.current, nextPublic);
+        await syncPublicLibrary({ ...account, displayName: username ?? account.displayName }, publicBaselineRef.current, nextPublic);
         cloudBaselineRef.current = snapshot;
         publicBaselineRef.current = nextPublic;
         if (localSnapshotRef.current === serialized) writeStoredLibrary(libraryStoreKey(account.uid), snapshot, false);
@@ -716,7 +821,7 @@ export default function LumeApp() {
       });
     }, 850);
     return () => window.clearTimeout(timeout);
-  }, [folders, decks, studyDays, focusMinutes, hydrated, account, cloudReady, refreshPublicDecks]);
+  }, [folders, decks, studyDays, focusMinutes, hydrated, account, username, cloudReady, refreshPublicDecks]);
 
   useEffect(() => {
     if (!focus && !breathing) return;
@@ -741,6 +846,44 @@ export default function LumeApp() {
     }, 1800);
     return () => window.clearTimeout(timeout);
   }, [focus?.finishedAt]);
+
+  const refreshClassList = useCallback(async () => {
+    if (!account) {
+      setClasses([]);
+      return;
+    }
+    setClasses(await loadClasses(account.uid));
+  }, [account]);
+
+  const refreshNotificationList = useCallback(async () => {
+    if (!account) {
+      setNotifications([]);
+      return;
+    }
+    setNotifications(await loadNotifications(account.uid));
+  }, [account]);
+
+  const refreshActiveClass = useCallback(async (classId: string) => {
+    if (!account) return;
+    setClassBusy(true);
+    try {
+      const workspace = await loadClassWorkspace(classId, account.uid);
+      setClassWorkspace(workspace);
+      setClasses((current) => current.map((item) => item.id === classId ? workspace.summary : item));
+      setClassNotice("");
+    } catch (error) {
+      setClassNotice(friendlyCloudError(error));
+    } finally {
+      setClassBusy(false);
+    }
+  }, [account]);
+
+  useEffect(() => {
+    if (view.name !== "class" || !account) return;
+    if (classWorkspace?.summary.id === view.id) return;
+    const timeout = window.setTimeout(() => { void refreshActiveClass(view.id); }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [view, account, classWorkspace?.summary.id, refreshActiveClass]);
 
   const folderById = useCallback((id: string | null) => folders.find((folder) => folder.id === id), [folders]);
 
@@ -799,7 +942,11 @@ export default function LumeApp() {
     [decks],
   );
   const randomEntry = randomCards.length ? randomCards[Math.abs(randomKey) % randomCards.length] : null;
-  const studyLibrary = useMemo(() => [...decks, ...publicDecks], [decks, publicDecks]);
+  const sharedDecks = useMemo(
+    () => classWorkspace?.decks.map((deck) => fromClassDeck(deck, classWorkspace.summary.id, classWorkspace.annotations, account?.uid)) ?? [],
+    [classWorkspace, account?.uid],
+  );
+  const studyLibrary = useMemo(() => [...decks, ...publicDecks, ...sharedDecks], [decks, publicDecks, sharedDecks]);
   const exploreDecks = cloudIsConfigured() ? publicDecks : decks.filter(deckIsPublic);
 
   const resolveStudyCard = useCallback(
@@ -905,7 +1052,7 @@ export default function LumeApp() {
             setCloudStatus("error");
           });
         }
-      } else {
+      } else if (!studyEntry.deck.shared) {
         setDecks((current) => current.map(updateDeck));
       }
       setStudy((current) => {
@@ -963,19 +1110,54 @@ export default function LumeApp() {
 
   const toggleStudyPin = useCallback(() => {
     if (!studyEntry) return;
+    if (studyEntry.deck.shared && studyEntry.deck.classId && account && username) {
+      const deckId = classSourceDeckId(studyEntry.deck.id);
+      const existing = classWorkspace?.annotations.find((annotation) => annotation.authorId === account.uid && annotation.deckId === deckId && annotation.cardId === studyEntry.card.id);
+      void saveClassAnnotation(studyEntry.deck.classId, account, username, {
+        deckId,
+        cardId: studyEntry.card.id,
+        pinned: !existing?.pinned,
+        note: existing?.note ?? "",
+      }).then((annotation) => {
+        setClassWorkspace((current) => {
+          if (!current) return current;
+          const id = `${account.uid}_${deckId}_${studyEntry.card.id}`;
+          const annotations = current.annotations.filter((item) => item.id !== id);
+          return { ...current, annotations: annotation ? [annotation, ...annotations] : annotations };
+        });
+      }).catch((error) => setClassNotice(friendlyCloudError(error)));
+      return;
+    }
     setDecks((current) => current.map((deck) => deck.id !== studyEntry.deck.id ? deck : {
       ...deck,
       cards: deck.cards.map((card) => card.id === studyEntry.card.id ? { ...card, pinned: !card.pinned } : card),
     }));
-  }, [studyEntry]);
+  }, [studyEntry, account, username, classWorkspace?.annotations]);
 
   const updateStudyPinComment = useCallback((pinComment: string) => {
     if (!studyEntry) return;
+    if (studyEntry.deck.shared && studyEntry.deck.classId && account && username) {
+      const deckId = classSourceDeckId(studyEntry.deck.id);
+      void saveClassAnnotation(studyEntry.deck.classId, account, username, {
+        deckId,
+        cardId: studyEntry.card.id,
+        pinned: true,
+        note: pinComment,
+      }).then((annotation) => {
+        setClassWorkspace((current) => {
+          if (!current) return current;
+          const id = `${account.uid}_${deckId}_${studyEntry.card.id}`;
+          const annotations = current.annotations.filter((item) => item.id !== id);
+          return { ...current, annotations: annotation ? [annotation, ...annotations] : annotations };
+        });
+      }).catch((error) => setClassNotice(friendlyCloudError(error)));
+      return;
+    }
     setDecks((current) => current.map((deck) => deck.id !== studyEntry.deck.id ? deck : {
       ...deck,
       cards: deck.cards.map((card) => card.id === studyEntry.card.id ? { ...card, pinned: true, pinComment } : card),
     }));
-  }, [studyEntry]);
+  }, [studyEntry, account, username]);
 
   const updateStudySettings = useCallback((changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => {
     setStudy((current) => {
@@ -1187,6 +1369,9 @@ export default function LumeApp() {
     setVoteBusy(true);
     try {
       await setPublicVote(setId, account.uid, next);
+      if (target.ownerId && next !== 0) {
+        await notifyPublicRating(target.ownerId, account.uid, username ?? account.displayName ?? account.email.split("@")[0], setId, target.title, next);
+      }
       await refreshPublicDecks(account.uid);
     } catch (error) {
       setAccountNotice(friendlyCloudError(error));
@@ -1195,6 +1380,166 @@ export default function LumeApp() {
       setPublicDecks((current) => current.map((deck) => deck.id === deckId ? { ...deck, votes: target.votes, userVote: previous } : deck));
     } finally {
       setVoteBusy(false);
+    }
+  };
+
+  const openClass = (classId: string, folderId: string | null = null) => {
+    if (classWorkspace?.summary.id !== classId) setClassWorkspace(null);
+    setView({ name: "class", id: classId, folderId });
+  };
+
+  const handleClassDialog = async (mode: "create" | "join", value: string) => {
+    if (!account || !username) {
+      setPreferencesOpen(true);
+      return;
+    }
+    setClassBusy(true);
+    setClassNotice("");
+    try {
+      const result = mode === "create"
+        ? await createClass(account, username, value)
+        : await joinClass(account, username, value);
+      setClassDialog(null);
+      await refreshClassList();
+      openClass(result.id);
+      await refreshActiveClass(result.id);
+      if (typeof window !== "undefined" && mode === "join") {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("join");
+        window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+      }
+    } catch (error) {
+      setClassNotice(friendlyCloudError(error));
+    } finally {
+      setClassBusy(false);
+    }
+  };
+
+  const handleSaveClassFolder = async (data: Omit<Folder, "id" | "createdAt">, editId?: string) => {
+    if (!account || !username || !classWorkspace) return;
+    const existing = editId ? classWorkspace.folders.find((folder) => folder.id === editId) : undefined;
+    const folder: ClassFolder = {
+      ...data,
+      id: editId ?? makeId("class-folder"),
+      createdAt: existing?.createdAt ?? Date.now(),
+      ownerId: existing?.ownerId ?? account.uid,
+      ownerName: existing?.ownerName ?? username,
+    };
+    setClassBusy(true);
+    try {
+      await saveClassFolder(classWorkspace.summary.id, account, username, folder);
+      if (!existing) await notifyClassContent(classWorkspace.summary.id, account, username, classWorkspace.members, { kind: "folder", id: folder.id, title: folder.title });
+      setClassFolderCreator(null);
+      await refreshActiveClass(classWorkspace.summary.id);
+      await refreshNotificationList();
+    } catch (error) {
+      setClassNotice(friendlyCloudError(error));
+    } finally {
+      setClassBusy(false);
+    }
+  };
+
+  const handleSaveClassDeck = async (data: Omit<Deck, "id" | "createdAt">, editId?: string) => {
+    if (!account || !username || !classWorkspace) return;
+    const existing = editId ? classWorkspace.decks.find((deck) => deck.id === editId) : undefined;
+    const deck: ClassDeck = {
+      ...toCloudDeck({ ...data, id: editId ?? makeId("class-deck"), createdAt: existing?.createdAt ?? Date.now() }),
+      ownerId: existing?.ownerId ?? account.uid,
+      ownerName: existing?.ownerName ?? username,
+    };
+    setClassBusy(true);
+    try {
+      await saveClassDeck(classWorkspace.summary.id, account, username, deck);
+      if (!existing) await notifyClassContent(classWorkspace.summary.id, account, username, classWorkspace.members, { kind: "deck", id: deck.id, title: deck.title });
+      setClassDeckCreator(null);
+      await refreshActiveClass(classWorkspace.summary.id);
+      await refreshNotificationList();
+    } catch (error) {
+      setClassNotice(friendlyCloudError(error));
+    } finally {
+      setClassBusy(false);
+    }
+  };
+
+  const importPersonalIntoClass = async (kind: ClassItemKind, id: string) => {
+    if (!account || !username || !classWorkspace || view.name !== "class") return;
+    const classId = classWorkspace.summary.id;
+    const destinationId = view.folderId ?? null;
+    const nextFolders: ClassFolder[] = [];
+    const nextDecks: ClassDeck[] = [];
+    let rootTitle = "Materiale";
+    let rootId = "";
+    if (kind === "deck") {
+      const source = decks.find((deck) => deck.id === id);
+      if (!source) return;
+      rootId = makeId("class-deck");
+      rootTitle = source.title;
+      nextDecks.push({ ...toCloudDeck({ ...source, id: rootId, folderId: destinationId, createdAt: Date.now(), cards: source.cards.map((card) => ({ ...card, id: makeId("card") })) }), ownerId: account.uid, ownerName: username });
+    } else {
+      const source = folders.find((folder) => folder.id === id);
+      if (!source) return;
+      rootTitle = source.title;
+      const sourceIds = descendantFolderIds(source.id);
+      const idMap = new Map(Array.from(sourceIds).map((folderId) => [folderId, makeId("class-folder")]));
+      rootId = idMap.get(source.id) as string;
+      folders.filter((folder) => sourceIds.has(folder.id)).forEach((folder) => nextFolders.push({ ...folder, id: idMap.get(folder.id) as string, parentId: folder.id === source.id ? destinationId : folder.parentId ? idMap.get(folder.parentId) ?? destinationId : destinationId, createdAt: Date.now(), ownerId: account.uid, ownerName: username }));
+      decks.filter((deck) => deck.folderId && sourceIds.has(deck.folderId)).forEach((deck) => nextDecks.push({ ...toCloudDeck({ ...deck, id: makeId("class-deck"), folderId: idMap.get(deck.folderId as string) ?? rootId, createdAt: Date.now(), cards: deck.cards.map((card) => ({ ...card, id: makeId("card") })) }), ownerId: account.uid, ownerName: username }));
+    }
+    setClassBusy(true);
+    try {
+      await saveClassBundle(classId, nextFolders, nextDecks);
+      await notifyClassContent(classId, account, username, classWorkspace.members, { kind, id: rootId, title: rootTitle });
+      setClassImportOpen(false);
+      await refreshActiveClass(classId);
+    } catch (error) {
+      setClassNotice(friendlyCloudError(error));
+    } finally {
+      setClassBusy(false);
+    }
+  };
+
+  const copyClassItemToPersonal = async (workspace: ClassWorkspace, kind: ClassItemKind, id: string) => {
+    if (kind === "deck") {
+      const source = workspace.decks.find((deck) => deck.id === id);
+      if (!source) return;
+      const local = fromCloudDeck(source);
+      setDecks((current) => [...current, { ...local, id: makeId("deck"), folderId: null, title: `${local.title} — copia`, visibility: "private", createdAt: Date.now(), lastStudied: undefined, cards: local.cards.map((card) => ({ ...card, id: makeId("card"), known: 0, missed: 0 })) }]);
+      return;
+    }
+    const source = workspace.folders.find((folder) => folder.id === id);
+    if (!source) return;
+    const sourceIds = new Set<string>([source.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      workspace.folders.forEach((folder) => {
+        if (folder.parentId && sourceIds.has(folder.parentId) && !sourceIds.has(folder.id)) { sourceIds.add(folder.id); changed = true; }
+      });
+    }
+    const idMap = new Map(Array.from(sourceIds).map((folderId) => [folderId, makeId("folder")]));
+    setFolders((current) => [...current, ...workspace.folders.filter((folder) => sourceIds.has(folder.id)).map((folder) => ({ id: idMap.get(folder.id) as string, parentId: folder.id === source.id ? null : folder.parentId ? idMap.get(folder.parentId) ?? null : null, title: folder.id === source.id ? `${folder.title} — copia` : folder.title, color: folder.color, visibility: "private" as Visibility, createdAt: Date.now() }))]);
+    setDecks((current) => [...current, ...workspace.decks.filter((deck) => deck.folderId && sourceIds.has(deck.folderId)).map((deck) => { const local = fromCloudDeck(deck); return { ...local, id: makeId("deck"), folderId: idMap.get(deck.folderId as string) ?? null, visibility: "private" as Visibility, createdAt: Date.now(), lastStudied: undefined, cards: local.cards.map((card) => ({ ...card, id: makeId("card"), known: 0, missed: 0 })) }; })]);
+  };
+
+  const handleNotificationAction = async (notification: LumeNotification, action: "read" | "approve" | "reject" | "copy") => {
+    if (!account || !username) return;
+    try {
+      if (action === "approve" || action === "reject") {
+        if (!notification.requestId) return;
+        await respondToCopyRequest(account, username, notification.requestId, action === "approve");
+      } else if (action === "copy") {
+        if (!notification.requestId) return;
+        const request = await loadCopyRequest(notification.requestId);
+        if (!request || request.requesterId !== account.uid || request.status !== "approved") return;
+        const workspace = await loadClassWorkspace(request.classId, account.uid);
+        await copyClassItemToPersonal(workspace, request.itemKind, request.itemId);
+        await markCopyRequestCopied(request.id);
+      }
+      await markNotificationRead(account.uid, notification.id);
+      await refreshNotificationList();
+      setClassNotice(action === "copy" ? "La copia è ora nel tuo spazio personale." : "Notifica aggiornata.");
+    } catch (error) {
+      setClassNotice(friendlyCloudError(error));
     }
   };
 
@@ -1279,6 +1624,7 @@ export default function LumeApp() {
       <Sidebar
         theme={theme}
         view={view}
+        classes={classes}
         folders={folders}
         decks={decks}
         expanded={expanded}
@@ -1291,6 +1637,7 @@ export default function LumeApp() {
           })
         }
         onNavigate={setView}
+        onOpenClass={(id) => openClass(id)}
         onCreate={() => setCreateMenu((open) => !open)}
         onTheme={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
         onPreferences={() => setPreferencesOpen(true)}
@@ -1305,6 +1652,8 @@ export default function LumeApp() {
           onHome={() => setView({ name: "home" })}
           onFocus={() => setFocusSetup(true)}
           onBreathe={() => setBreathing({ startedAt: Date.now() })}
+          notificationCount={notifications.filter((notification) => !notification.read).length}
+          onNotifications={() => setNotificationsOpen((open) => !open)}
           onPreferences={() => setPreferencesOpen(true)}
         />
 
@@ -1361,6 +1710,75 @@ export default function LumeApp() {
             />
           )}
 
+          {view.name === "classes" && (
+            <ClassesPage
+              account={account}
+              username={username}
+              classes={classes}
+              notice={classNotice}
+              busy={classBusy}
+              onLogin={() => setPreferencesOpen(true)}
+              onCreate={() => setClassDialog({ mode: "create" })}
+              onJoin={() => setClassDialog({ mode: "join" })}
+              onOpen={(id) => openClass(id)}
+            />
+          )}
+
+          {view.name === "class" && (
+            <ClassView
+              account={account}
+              username={username}
+              workspace={classWorkspace?.summary.id === view.id ? classWorkspace : null}
+              folderId={view.folderId ?? null}
+              busy={classBusy}
+              notice={classNotice}
+              annotationFilter={annotationFilter}
+              onAnnotationFilter={setAnnotationFilter}
+              onBack={() => setView({ name: "classes" })}
+              onOpenFolder={(folderId) => openClass(view.id, folderId)}
+              onCreate={() => setClassCreateMenu(true)}
+              onImport={() => setClassImportOpen(true)}
+              onEdit={(kind, id) => {
+                if (kind === "folder") setClassFolderCreator({ classId: view.id, parentId: classWorkspace?.folders.find((folder) => folder.id === id)?.parentId ?? null, editId: id });
+                else setClassDeckCreator({ classId: view.id, folderId: classWorkspace?.decks.find((deck) => deck.id === id)?.folderId ?? null, editId: id });
+              }}
+              onStudy={(ids) => startStudy(ids.map((id) => `class:${view.id}:${id}`))}
+              onFavorite={async (kind, id, active) => {
+                if (!account || !classWorkspace) return;
+                const item = kind === "folder" ? classWorkspace.folders.find((folder) => folder.id === id) : classWorkspace.decks.find((deck) => deck.id === id);
+                if (!item) return;
+                const favorite: ClassFavorite = { id: `${view.id}_${kind}_${id}`, classId: view.id, classTitle: classWorkspace.summary.title, itemKind: kind, itemId: id, itemTitle: item.title, color: item.color, createdAt: Date.now() };
+                await toggleClassFavorite(account.uid, favorite, active);
+                await refreshActiveClass(view.id);
+              }}
+              onCopy={async (kind, id) => {
+                if (!account || !username || !classWorkspace) return;
+                const item = kind === "folder" ? classWorkspace.folders.find((folder) => folder.id === id) : classWorkspace.decks.find((deck) => deck.id === id);
+                if (!item) return;
+                if (item.ownerId === account.uid) {
+                  await copyClassItemToPersonal(classWorkspace, kind, id);
+                  setClassNotice("La copia è ora nel tuo spazio personale.");
+                } else {
+                  await requestClassCopy(classWorkspace.summary, account, username, { kind, id, title: item.title, ownerId: item.ownerId, ownerName: item.ownerName });
+                  setClassNotice(`Richiesta inviata a ${item.ownerName}.`);
+                }
+              }}
+              onComment={async (kind, id, text) => {
+                if (!account || !username || !classWorkspace) return;
+                const item = kind === "folder" ? classWorkspace.folders.find((folder) => folder.id === id) : classWorkspace.decks.find((deck) => deck.id === id);
+                if (!item || !text.trim()) return;
+                await addClassComment(view.id, account, username, { kind, id, title: item.title, ownerId: item.ownerId }, text);
+                await refreshActiveClass(view.id);
+                await refreshNotificationList();
+              }}
+              onAnnotation={async (deckId, note, pinned) => {
+                if (!account || !username) return;
+                await saveClassAnnotation(view.id, account, username, { deckId, cardId: null, note, pinned });
+                await refreshActiveClass(view.id);
+              }}
+            />
+          )}
+
           {currentFolder && (
             <FolderView
               folder={currentFolder}
@@ -1407,6 +1825,7 @@ export default function LumeApp() {
           onHome={() => setView({ name: "home" })}
           onFolders={() => setView({ name: "folders" })}
           onExplore={() => setView({ name: "explore" })}
+          onClasses={() => setView({ name: "classes" })}
           onCreate={() => setCreateMenu((open) => !open)}
         />
       </div>
@@ -1424,6 +1843,43 @@ export default function LumeApp() {
           }}
         />
       )}
+
+      {classCreateMenu && view.name === "class" && (
+        <CreateMenu
+          onClose={() => setClassCreateMenu(false)}
+          onFolder={() => { setClassFolderCreator({ classId: view.id, parentId: view.folderId ?? null }); setClassCreateMenu(false); }}
+          onDeck={() => { setClassDeckCreator({ classId: view.id, folderId: view.folderId ?? null }); setClassCreateMenu(false); }}
+        />
+      )}
+
+      {classImportOpen && view.name === "class" && <ClassImportModal folders={folders} decks={decks} onImport={(kind, id) => { void importPersonalIntoClass(kind, id); }} onClose={() => setClassImportOpen(false)} />}
+
+      {classFolderCreator && classWorkspace && (
+        <FolderCreator
+          folder={classFolderCreator.editId ? classWorkspace.folders.find((folder) => folder.id === classFolderCreator.editId) : undefined}
+          folders={classWorkspace.folders}
+          defaultParentId={classFolderCreator.parentId}
+          parentPublic={() => false}
+          onSave={(data, editId) => { void handleSaveClassFolder(data, editId); }}
+          onClose={() => setClassFolderCreator(null)}
+        />
+      )}
+
+      {classDeckCreator && classWorkspace && (
+        <DeckCreator
+          deck={classDeckCreator.editId ? fromClassDeck(classWorkspace.decks.find((deck) => deck.id === classDeckCreator.editId) as ClassDeck, classWorkspace.summary.id, classWorkspace.annotations, account?.uid) : undefined}
+          folders={classWorkspace.folders}
+          defaultFolderId={classDeckCreator.folderId}
+          folderPublic={() => false}
+          theme={theme}
+          onSave={(data, editId) => { void handleSaveClassDeck(data, editId ? classSourceDeckId(editId) : undefined); }}
+          onClose={() => setClassDeckCreator(null)}
+        />
+      )}
+
+      {classDialog && <ClassDialog mode={classDialog.mode} initialCode={classDialog.code} busy={classBusy} notice={classNotice} onSubmit={(value) => { void handleClassDialog(classDialog.mode, value); }} onClose={() => setClassDialog(null)} />}
+
+      {notificationsOpen && <NotificationCenter notifications={notifications} onAction={(notification, action) => { void handleNotificationAction(notification, action); }} onClose={() => setNotificationsOpen(false)} />}
 
       {folderCreator && (
         <FolderCreator
@@ -1458,7 +1914,13 @@ export default function LumeApp() {
           onTheme={setTheme}
           onGoogle={() => runAccountAction(async () => setAccount(await loginWithGoogle()))}
           onEmailLogin={(email, password) => runAccountAction(async () => setAccount(await loginWithEmail(email, password)))}
-          onEmailRegister={(name, email, password) => runAccountAction(async () => setAccount(await registerWithEmail(name, email, password)))}
+          onEmailRegister={(name, email, password) => runAccountAction(async () => {
+            const created = await registerWithEmail(name, email, password);
+            const claimed = await claimUsername(created, name);
+            setUsername(claimed);
+            setUsernameChecked(true);
+            setAccount({ ...created, displayName: claimed });
+          })}
           onPasswordReset={(email) => runAccountAction(() => resetAccountPassword(email), "Ti abbiamo inviato l’email per scegliere una nuova password.")}
           onLogout={() => runAccountAction(() => logoutAccount(), "Sei uscita dall’account. I dati online restano al sicuro.")}
           onClose={() => setPreferencesOpen(false)}
@@ -1489,6 +1951,7 @@ export default function LumeApp() {
       )}
       {batchMove && <FolderPickerModal folders={folders} onSelect={(folderId) => moveDecks(batchMove, folderId)} onClose={() => setBatchMove(null)} />}
       {deleteRequest && <DeleteConfirmModal request={deleteRequest} onConfirm={confirmDelete} onClose={() => setDeleteRequest(null)} />}
+      {account && usernameChecked && !username && <UsernameGate account={account} busy={accountBusy} notice={accountNotice} onSave={(value) => runAccountAction(async () => { const claimed = await claimUsername(account, value); setUsername(claimed); setAccount((current) => current ? { ...current, displayName: claimed } : current); })} />}
     </div>
   );
 }
@@ -1496,11 +1959,13 @@ export default function LumeApp() {
 function Sidebar({
   theme,
   view,
+  classes,
   folders,
   decks,
   expanded,
   onToggle,
   onNavigate,
+  onOpenClass,
   onCreate,
   onTheme,
   onPreferences,
@@ -1511,11 +1976,13 @@ function Sidebar({
 }: {
   theme: "light" | "dark";
   view: View;
+  classes: LumeClass[];
   folders: Folder[];
   decks: Deck[];
   expanded: Set<string>;
   onToggle: (id: string) => void;
   onNavigate: (view: View) => void;
+  onOpenClass: (id: string) => void;
   onCreate: () => void;
   onTheme: () => void;
   onPreferences: () => void;
@@ -1582,7 +2049,9 @@ function Sidebar({
       <nav className="primary-nav" aria-label="Navigazione principale">
         <button className={view.name === "home" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "home" })}><i className="icon-home" />Il mio spazio</button>
         <button className={view.name === "explore" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "explore" })}><i className="icon-search" />Esplora</button>
+        <button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "classes" })}><i className="icon-classes" />Classi</button>
       </nav>
+      {classes.length > 0 && <div className="sidebar-classes">{classes.slice(0, 5).map((item) => <button className={view.name === "class" && view.id === item.id ? "active" : ""} type="button" key={item.id} onClick={() => onOpenClass(item.id)}><i /><span>{item.title}</span></button>)}</div>}
       <div className={dropTarget === null ? "sidebar-folders-heading drop-target" : "sidebar-folders-heading"} onDragOver={(event) => { event.preventDefault(); setDropTarget(null); }} onDragLeave={() => setDropTarget(undefined)} onDrop={(event) => dropInto(event, null)}>
         <span>Le mie cartelle</span>
         <button type="button" onClick={onCreate} aria-label="Crea cartella o set">＋</button>
@@ -1605,11 +2074,12 @@ function Sidebar({
   );
 }
 
-function Topbar({ onHome, onFocus, onBreathe, onPreferences }: { onHome: () => void; onFocus: () => void; onBreathe: () => void; onPreferences: () => void }) {
+function Topbar({ onHome, onFocus, onBreathe, notificationCount, onNotifications, onPreferences }: { onHome: () => void; onFocus: () => void; onBreathe: () => void; notificationCount: number; onNotifications: () => void; onPreferences: () => void }) {
   return (
     <header className="topbar-new">
       <button className="mobile-wordmark" type="button" onClick={onHome}>Lume</button>
       <div className="top-tools">
+        <button className="notification-tool" type="button" onClick={onNotifications} aria-label={`${notificationCount} notifiche non lette`}><i className="icon-bell" />{notificationCount > 0 && <b>{notificationCount > 9 ? "9+" : notificationCount}</b>}<span>Notifiche</span></button>
         <button type="button" onClick={onFocus} aria-label="Timer Lume"><i className="mini-candle" /><span>Timer Lume</span></button>
         <button type="button" onClick={onBreathe} aria-label="Respira"><i className="breath-dot" /><span>Respira</span></button>
         <button className="mobile-preferences-tool" type="button" onClick={onPreferences} aria-label="Preferenze"><i className="icon-profile" /><span>Preferenze</span></button>
@@ -1758,6 +2228,67 @@ function Explore({ search, onSearch, decks, cloudStatus, onOpen }: { search: str
       </div>
     </div>
   );
+}
+
+function ClassesPage({ account, username, classes, notice, busy, onLogin, onCreate, onJoin, onOpen }: { account: CloudAccount | null; username: string | null; classes: LumeClass[]; notice: string; busy: boolean; onLogin: () => void; onCreate: () => void; onJoin: () => void; onOpen: (id: string) => void }) {
+  return <div className="classes-page"><div className="page-intro"><span>Spazi condivisi</span><h1>Classi</h1><p>Raccogli materiali insieme alle persone con cui studi, senza mescolare i rispettivi spazi personali.</p></div>
+    {!account ? <section className="class-access-card"><div><span>Account necessario</span><h2>Accedi per entrare in una classe.</h2><p>Le classi e le notifiche restano collegate al tuo profilo.</p></div><button className="primary-dark" type="button" onClick={onLogin}>Accedi</button></section> : !username ? <section className="class-access-card"><div><span>Profilo da completare</span><h2>Scegli prima il tuo nome utente.</h2><p>È il nome pubblico che gli altri membri vedranno accanto ai tuoi materiali.</p></div></section> : <>
+      <section className="class-actions-hero"><div><span>Il tuo profilo in classe</span><strong>@{username}</strong><small>L’email sarà visibile soltanto agli altri membri delle classi a cui partecipi.</small></div><div><button className="outline-button" type="button" onClick={onJoin}>Entra con un codice</button><button className="primary-dark" type="button" onClick={onCreate}>Crea una classe</button></div></section>
+      {notice && <p className="class-notice">{notice}</p>}
+      <section className="class-library"><div className="section-title"><h2>Le tue classi</h2><span>{classes.length}</span></div><div className="class-grid">{classes.map((item) => <button className="class-card" type="button" key={item.id} onClick={() => onOpen(item.id)}><i className="class-card-mark" /><span>{item.role === "owner" ? "Creata da te" : `Di @${item.ownerName}`}</span><strong>{item.title}</strong><small>{item.memberCount} {item.memberCount === 1 ? "membro" : "membri"}</small><em>Apri →</em></button>)}{!classes.length && <div className="class-empty"><strong>Non fai ancora parte di nessuna classe.</strong><p>Crea uno spazio oppure usa il codice ricevuto da un’altra persona.</p></div>}</div></section>
+    </>}
+    {busy && <p className="class-loading">Aggiornamento in corso…</p>}
+  </div>;
+}
+
+function ClassView({ account, username, workspace, folderId, busy, notice, annotationFilter, onAnnotationFilter, onBack, onOpenFolder, onCreate, onImport, onEdit, onStudy, onFavorite, onCopy, onComment, onAnnotation }: { account: CloudAccount | null; username: string | null; workspace: ClassWorkspace | null; folderId: string | null; busy: boolean; notice: string; annotationFilter: AnnotationFilter; onAnnotationFilter: (filter: AnnotationFilter) => void; onBack: () => void; onOpenFolder: (id: string | null) => void; onCreate: () => void; onImport: () => void; onEdit: (kind: ClassItemKind, id: string) => void; onStudy: (deckIds: string[]) => void; onFavorite: (kind: ClassItemKind, id: string, active: boolean) => void | Promise<void>; onCopy: (kind: ClassItemKind, id: string) => void | Promise<void>; onComment: (kind: ClassItemKind, id: string, text: string) => void | Promise<void>; onAnnotation: (deckId: string, note: string, pinned: boolean) => void | Promise<void> }) {
+  const [membersOpen, setMembersOpen] = useState(false);
+  if (!workspace || !account || !username) return <div className="class-loading-page"><button type="button" onClick={onBack}>← Tutte le classi</button><p>{busy ? "Sto aprendo la classe…" : notice || "Classe non disponibile."}</p></div>;
+  const currentFolder = folderId ? workspace.folders.find((folder) => folder.id === folderId) : null;
+  const children = workspace.folders.filter((folder) => folder.parentId === folderId);
+  const visibleDecks = workspace.decks.filter((deck) => deck.folderId === folderId);
+  const ancestors: ClassFolder[] = [];
+  let ancestor = currentFolder;
+  const seen = new Set<string>();
+  while (ancestor && !seen.has(ancestor.id)) {
+    ancestors.unshift(ancestor);
+    seen.add(ancestor.id);
+    ancestor = ancestor.parentId ? workspace.folders.find((folder) => folder.id === ancestor?.parentId) : undefined;
+  }
+  const deckIdsForFolder = () => {
+    if (!folderId) return workspace.decks.map((deck) => deck.id);
+    const ids = new Set<string>([folderId]);
+    let changed = true;
+    while (changed) { changed = false; workspace.folders.forEach((folder) => { if (folder.parentId && ids.has(folder.parentId) && !ids.has(folder.id)) { ids.add(folder.id); changed = true; } }); }
+    return workspace.decks.filter((deck) => deck.folderId && ids.has(deck.folderId)).map((deck) => deck.id);
+  };
+  const shareUrl = typeof window === "undefined" ? "" : `${window.location.origin}${window.location.pathname}?join=${workspace.summary.code}`;
+  return <div className="class-page"><section className="class-hero"><nav className="class-breadcrumbs"><button type="button" onClick={onBack}>Classi</button><i>›</i><button type="button" onClick={() => onOpenFolder(null)}>{workspace.summary.title}</button>{ancestors.map((item) => <span key={item.id}><i>›</i><button type="button" onClick={() => onOpenFolder(item.id)}>{item.title}</button></span>)}</nav><div className="class-hero-main"><div><span>{workspace.summary.role === "owner" ? "La tua classe" : `Classe di @${workspace.summary.ownerName}`}</span><h1>{currentFolder?.title ?? workspace.summary.title}</h1><p>{workspace.members.length} membri · {workspace.decks.length} set · {workspace.decks.reduce((sum, deck) => sum + deck.cards.length, 0)} flashcard</p></div><div className="class-hero-actions"><button className="outline-button" type="button" onClick={() => setMembersOpen((open) => !open)}>Membri</button><button className="outline-button" type="button" onClick={() => { void navigator.clipboard.writeText(shareUrl); }}>Copia link di invito</button><button className="primary-dark" type="button" disabled={!deckIdsForFolder().length} onClick={() => onStudy(deckIdsForFolder())}>Studia {currentFolder ? "la cartella" : "tutta la classe"}</button></div></div>{membersOpen && <div className="class-members"><header><div><span>Membri della classe</span><small>L’email è visibile soltanto qui, alle persone che fanno parte della classe.</small></div><button type="button" onClick={() => setMembersOpen(false)}>×</button></header><ul>{workspace.members.map((member) => <li key={member.uid}><span><strong>@{member.username}</strong>{member.role === "owner" && <em>Creatore</em>}</span><a href={`mailto:${member.email}`}>{member.email}</a></li>)}</ul><footer><span>Codice classe</span><button type="button" onClick={() => { void navigator.clipboard.writeText(workspace.summary.code); }}>{workspace.summary.code}</button></footer></div>}</section>
+    <section className="class-toolbar"><div><button className="primary-dark" type="button" onClick={onCreate}>＋ Nuovo</button><button className="outline-button" type="button" onClick={onImport}>Porta dal mio spazio</button></div><div className="annotation-filter"><span>Note e pin</span><button className={annotationFilter === "all" ? "active" : ""} type="button" onClick={() => onAnnotationFilter("all")}>Tutti</button><button className={annotationFilter === "mine" ? "active" : ""} type="button" onClick={() => onAnnotationFilter("mine")}>Solo i miei</button><button className={annotationFilter === "hidden" ? "active" : ""} type="button" onClick={() => onAnnotationFilter("hidden")}>Nascondi</button></div></section>
+    {notice && <p className="class-notice">{notice}</p>}
+    <section className="class-content"><div className="section-title"><h2>{currentFolder ? "Contenuti della cartella" : "Materiali condivisi"}</h2><span>{children.length + visibleDecks.length}</span></div><div className="class-item-grid">{children.map((folder) => <ClassItemPanel key={folder.id} kind="folder" item={folder} accountId={account.uid} classOwnerId={workspace.summary.ownerId} favorite={workspace.favorites.some((favorite) => favorite.itemKind === "folder" && favorite.itemId === folder.id)} comments={workspace.comments.filter((comment) => comment.targetKind === "folder" && comment.targetId === folder.id)} annotations={[]} annotationFilter={annotationFilter} onOpen={() => onOpenFolder(folder.id)} onEdit={() => onEdit("folder", folder.id)} onFavorite={(active) => onFavorite("folder", folder.id, active)} onCopy={() => onCopy("folder", folder.id)} onComment={(text) => onComment("folder", folder.id, text)} onAnnotation={() => undefined} />)}{visibleDecks.map((deck) => <ClassItemPanel key={deck.id} kind="deck" item={deck} accountId={account.uid} classOwnerId={workspace.summary.ownerId} favorite={workspace.favorites.some((favorite) => favorite.itemKind === "deck" && favorite.itemId === deck.id)} comments={workspace.comments.filter((comment) => comment.targetKind === "deck" && comment.targetId === deck.id)} annotations={workspace.annotations.filter((annotation) => annotation.deckId === deck.id && !annotation.cardId)} annotationFilter={annotationFilter} onOpen={() => onStudy([deck.id])} onEdit={() => onEdit("deck", deck.id)} onFavorite={(active) => onFavorite("deck", deck.id, active)} onCopy={() => onCopy("deck", deck.id)} onComment={(text) => onComment("deck", deck.id, text)} onAnnotation={(note, pinned) => onAnnotation(deck.id, note, pinned)} />)}{children.length + visibleDecks.length === 0 && <div className="class-empty"><strong>Questo spazio è ancora vuoto.</strong><p>Crea un contenuto nuovo oppure portane una copia dal tuo spazio personale.</p></div>}</div></section>
+    {busy && <p className="class-loading">Salvataggio in corso…</p>}
+  </div>;
+}
+
+function ClassItemPanel({ kind, item, accountId, classOwnerId, favorite, comments, annotations, annotationFilter, onOpen, onEdit, onFavorite, onCopy, onComment, onAnnotation }: { kind: ClassItemKind; item: ClassFolder | ClassDeck; accountId: string; classOwnerId: string; favorite: boolean; comments: ClassComment[]; annotations: ClassAnnotation[]; annotationFilter: AnnotationFilter; onOpen: () => void; onEdit: () => void; onFavorite: (active: boolean) => void | Promise<void>; onCopy: () => void | Promise<void>; onComment: (text: string) => void | Promise<void>; onAnnotation: (note: string, pinned: boolean) => void | Promise<void> }) {
+  const ownAnnotation = annotations.find((annotation) => annotation.authorId === accountId);
+  const [note, setNote] = useState(ownAnnotation?.note ?? "");
+  const [pinned, setPinned] = useState(ownAnnotation?.pinned ?? false);
+  const [comment, setComment] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const visibleAnnotations = annotationFilter === "mine" ? annotations.filter((annotation) => annotation.authorId === accountId) : annotations;
+  const canEdit = item.ownerId === accountId || classOwnerId === accountId;
+  return <article className="class-item-card" style={{ "--item-color": item.color } as React.CSSProperties}><button className="class-item-open" type="button" onClick={onOpen}><i className={kind === "folder" ? "class-folder-object" : `class-notebook-object pattern-${(item as ClassDeck).pattern}`} /><span>{kind === "folder" ? "Cartella" : `${(item as ClassDeck).cards.length} flashcard`}</span><strong>{item.title}</strong><small>di @{item.ownerName}</small></button><div className="class-item-actions"><button className={favorite ? "favorite active" : "favorite"} type="button" onClick={() => { void onFavorite(!favorite); }} aria-label={favorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}>☆</button>{canEdit && <button type="button" onClick={onEdit}>Modifica</button>}<button type="button" onClick={() => { void onCopy(); }}>{item.ownerId === accountId ? "Copia nel mio spazio" : "Richiedi una copia"}</button><button type="button" onClick={() => setDetailsOpen((open) => !open)}>{detailsOpen ? "Chiudi" : "Note e commenti"}</button></div>{detailsOpen && <div className="class-collaboration">{kind === "deck" && annotationFilter !== "hidden" && <section className="class-note-editor"><label><span>La tua nota condivisa</span><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Lascia un appunto utile alla classe…" /></label><label className="class-pin-toggle"><input type="checkbox" checked={pinned} onChange={(event) => setPinned(event.target.checked)} /><span>Metti un pin</span></label><button type="button" onClick={() => { void onAnnotation(note, pinned); }}>Salva nota</button>{visibleAnnotations.filter((annotation) => annotation.authorId !== accountId || annotation.note || annotation.pinned).length > 0 && <ul className="shared-note-list">{visibleAnnotations.map((annotation) => <li key={annotation.id}><strong>@{annotation.authorName}{annotation.pinned ? " · Pin" : ""}</strong>{annotation.note && <p>{annotation.note}</p>}</li>)}</ul>}</section>}<section className="class-comments"><span>Commenti</span><ul>{comments.map((entry) => <li key={entry.id}><strong>@{entry.authorName}</strong><p>{entry.text}</p></li>)}</ul><form onSubmit={(event) => { event.preventDefault(); if (!comment.trim()) return; void onComment(comment); setComment(""); }}><input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Scrivi un commento…" /><button type="submit" disabled={!comment.trim()}>Invia</button></form></section></div>}</article>;
+}
+
+function ClassDialog({ mode, initialCode, busy, notice, onSubmit, onClose }: { mode: "create" | "join"; initialCode?: string; busy: boolean; notice: string; onSubmit: (value: string) => void; onClose: () => void }) {
+  const [value, setValue] = useState(initialCode ?? "");
+  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className="class-dialog" onSubmit={(event) => { event.preventDefault(); if (value.trim()) onSubmit(value); }}><button className="round-close" type="button" onClick={onClose}>×</button><span>{mode === "create" ? "Nuovo spazio condiviso" : "Invito"}</span><h2>{mode === "create" ? "Crea una classe." : "Entra in una classe."}</h2><label><span>{mode === "create" ? "Nome della classe" : "Codice della classe"}</span><input autoFocus value={value} onChange={(event) => setValue(mode === "join" ? event.target.value.toUpperCase() : event.target.value)} maxLength={mode === "join" ? 7 : 70} placeholder={mode === "create" ? "Es. Psicologia cognitiva" : "XXXXXXX"} /></label>{notice && <p className="class-notice">{notice}</p>}<button className="primary-dark" type="submit" disabled={busy || !value.trim()}>{busy ? "Attendi…" : mode === "create" ? "Crea la classe" : "Entra"}</button></form></div>;
+}
+
+function ClassImportModal({ folders, decks, onImport, onClose }: { folders: Folder[]; decks: Deck[]; onImport: (kind: ClassItemKind, id: string) => void; onClose: () => void }) {
+  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="class-import-modal"><button className="round-close" type="button" onClick={onClose}>×</button><span>Dal tuo spazio personale</span><h2>Porta una copia nella classe.</h2><p>Il materiale condiviso sarà indipendente dall’originale: le modifiche in classe non toccheranno il tuo archivio.</p><div><h3>Cartelle</h3>{folders.filter((folder) => !folder.parentId).map((folder) => <button type="button" key={folder.id} onClick={() => onImport("folder", folder.id)}><i className="icon-folder-line" /><span>{folder.title}</span><em>Importa</em></button>)}</div><div><h3>Set</h3>{decks.map((deck) => <button type="button" key={deck.id} onClick={() => onImport("deck", deck.id)}><i className="create-deck-icon" /><span>{deck.title}</span><em>Importa</em></button>)}</div></section></div>;
 }
 
 function FolderView({
@@ -2208,6 +2739,26 @@ function BreathingScreen({ elapsed, onExit }: { elapsed: number; onExit: () => v
   return <div className="breathing-screen"><header><button type="button" onClick={onExit}>Esci</button></header><section className="breathing-copy"><strong>{seconds} secondi</strong><span>{cycle} di 10</span><p>{inhale ? "Inspira lentamente." : "Lascia andare lentamente."}</p></section><div className={inhale ? "breathing-orbit inhale" : "breathing-orbit exhale"}><i /><i /><i /><span className="tiny-candle"><b /><em /></span></div><div className="breath-progress">{Array.from({ length: 10 }, (_, index) => index + 1).map((item) => <i className={item <= cycle ? "done" : ""} key={item} />)}</div></div>;
 }
 
+function UsernameGate({ account, busy, notice, onSave }: { account: CloudAccount; busy: boolean; notice: string; onSave: (value: string) => void | Promise<void> }) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      const username = validateUsername(value);
+      setError("");
+      void onSave(username);
+    } catch (problem) {
+      setError(friendlyCloudError(problem));
+    }
+  };
+  return <div className="modal-backdrop-clean username-gate"><form onSubmit={submit}><span>Completa il profilo</span><h2>Scegli il tuo nome utente.</h2><p>Sarà pubblico in Esplora e nelle classi. Nelle classi, soltanto gli altri membri potranno vedere anche l’email <strong>{account.email}</strong>.</p><label><span>Nome utente univoco</span><div><b>@</b><input autoFocus value={value} onChange={(event) => setValue(event.target.value.toLowerCase())} autoComplete="username" placeholder="nomeutente" maxLength={24} /></div></label><small>3–24 caratteri: lettere minuscole, numeri, punto, trattino o underscore.</small>{(error || notice) && <p className="account-message error">{error || notice}</p>}<button className="primary-dark" type="submit" disabled={busy || !value.trim()}>{busy ? "Controllo…" : "Salva nome utente"}</button></form></div>;
+}
+
+function NotificationCenter({ notifications, onAction, onClose }: { notifications: LumeNotification[]; onAction: (notification: LumeNotification, action: "read" | "approve" | "reject" | "copy") => void; onClose: () => void }) {
+  return <div className="notification-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="notification-center"><header><div><span>Aggiornamenti</span><h2>Notifiche</h2></div><button type="button" onClick={onClose}>×</button></header><div className="notification-list">{notifications.map((notification) => <article className={notification.read ? "read" : ""} key={notification.id}><div><span>{notification.title}</span><small>{new Date(notification.createdAt).toLocaleDateString("it-IT", { day: "numeric", month: "short" })}</small></div><p>{notification.message}</p><footer>{notification.type === "copy_request" && !notification.read ? <><button type="button" onClick={() => onAction(notification, "reject")}>Non approvare</button><button className="primary-dark" type="button" onClick={() => onAction(notification, "approve")}>Autorizza copia</button></> : notification.type === "copy_approved" && !notification.read ? <button className="primary-dark" type="button" onClick={() => onAction(notification, "copy")}>Aggiungi al mio spazio</button> : !notification.read ? <button type="button" onClick={() => onAction(notification, "read")}>Segna come letta</button> : null}</footer></article>)}{!notifications.length && <div className="notification-empty"><strong>Nessuna notifica.</strong><p>Qui appariranno inviti, nuovi materiali, commenti, richieste di copia e valutazioni.</p></div>}</div></aside></div>;
+}
+
 function Preferences({ theme, account, cloudStatus, busy, notice, onTheme, onGoogle, onEmailLogin, onEmailRegister, onPasswordReset, onLogout, onClose }: { theme: "light" | "dark"; account: CloudAccount | null; cloudStatus: CloudStatus; busy: boolean; notice: string; onTheme: (theme: "light" | "dark") => void; onGoogle: () => void | Promise<void>; onEmailLogin: (email: string, password: string) => void | Promise<void>; onEmailRegister: (name: string, email: string, password: string) => void | Promise<void>; onPasswordReset: (email: string) => void | Promise<void>; onLogout: () => void | Promise<void>; onClose: () => void }) {
   const [registering, setRegistering] = useState(false);
   const [name, setName] = useState("");
@@ -2230,13 +2781,13 @@ function Preferences({ theme, account, cloudStatus, busy, notice, onTheme, onGoo
     else void onEmailLogin(email, password);
   };
   return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="preferences-modal account-preferences"><button className="round-close" type="button" onClick={onClose}>×</button><span>Preferenze</span><h2>{account ? "Il tuo spazio, sempre con te." : "Salva e pubblica con il tuo account."}</h2>
-    {account ? <section className="account-card"><div className={account.photoURL ? "account-avatar has-photo" : "account-avatar"} style={account.photoURL ? { backgroundImage: `url(${account.photoURL})` } : undefined}>{!account.photoURL && <span>{(account.displayName || account.email || "L").slice(0, 1).toUpperCase()}</span>}</div><div><strong>{account.displayName || "Account Lume"}</strong><p>{account.email}</p><small className={`cloud-state ${cloudStatus}`}>{statusText}</small></div><button className="outline-button" type="button" disabled={busy} onClick={() => { void onLogout(); }}>Esci dall’account</button></section> : <section className="account-login"><button className="google-login" type="button" disabled={busy || cloudStatus === "unavailable"} onClick={() => { void onGoogle(); }}><b>G</b>Continua con Google</button><div className="login-divider"><span>oppure con email</span></div><form onSubmit={submit}>{registering && <label><span>Nome</span><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="Come vuoi essere chiamata" /></label>}<label><span>Email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="nome@email.it" /></label><label><span>Password</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={registering ? "new-password" : "current-password"} placeholder="Almeno 6 caratteri" /></label>{formError && <p className="account-message error">{formError}</p>}<button className="primary-dark account-submit" type="submit" disabled={busy || cloudStatus === "unavailable"}>{busy ? "Attendi…" : registering ? "Crea account" : "Accedi"}</button></form><div className="account-links"><button type="button" onClick={() => { setRegistering((value) => !value); setFormError(""); }}>{registering ? "Hai già un account? Accedi" : "Non hai un account? Crealo"}</button>{!registering && <button type="button" disabled={!email.trim() || busy} onClick={() => { if (email.trim()) void onPasswordReset(email); }}>Password dimenticata?</button>}</div></section>}
+    {account ? <section className="account-card"><div className={account.photoURL ? "account-avatar has-photo" : "account-avatar"} style={account.photoURL ? { backgroundImage: `url(${account.photoURL})` } : undefined}>{!account.photoURL && <span>{(account.displayName || account.email || "L").slice(0, 1).toUpperCase()}</span>}</div><div><strong>{account.displayName || "Account Lume"}</strong><p>{account.email}</p><small className={`cloud-state ${cloudStatus}`}>{statusText}</small></div><button className="outline-button" type="button" disabled={busy} onClick={() => { void onLogout(); }}>Esci dall’account</button></section> : <section className="account-login"><button className="google-login" type="button" disabled={busy || cloudStatus === "unavailable"} onClick={() => { void onGoogle(); }}><b>G</b>Continua con Google</button><div className="login-divider"><span>oppure con email</span></div><form onSubmit={submit}>{registering && <label><span>Nome utente</span><input value={name} onChange={(event) => setName(event.target.value.toLowerCase())} autoComplete="username" placeholder="nomeutente" /></label>}<label><span>Email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="nome@email.it" /></label><label><span>Password</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={registering ? "new-password" : "current-password"} placeholder="Almeno 6 caratteri" /></label>{formError && <p className="account-message error">{formError}</p>}<button className="primary-dark account-submit" type="submit" disabled={busy || cloudStatus === "unavailable"}>{busy ? "Attendi…" : registering ? "Crea account" : "Accedi"}</button></form><div className="account-links"><button type="button" onClick={() => { setRegistering((value) => !value); setFormError(""); }}>{registering ? "Hai già un account? Accedi" : "Non hai un account? Crealo"}</button>{!registering && <button type="button" disabled={!email.trim() || busy} onClick={() => { if (email.trim()) void onPasswordReset(email); }}>Password dimenticata?</button>}</div></section>}
     {notice && <p className="account-message" aria-live="polite">{notice}</p>}
     {cloudStatus === "unavailable" && <p className="account-message error">Il salvataggio online non è configurato in questa versione del sito.</p>}
     <div className="preference-separator" /><label className="appearance-field"><span>Aspetto</span><select value={theme} onChange={(event) => onTheme(event.target.value as "light" | "dark")}><option value="light">Modalità chiara</option><option value="dark">Modalità scura</option></select></label><div className="preference-note"><strong>{account ? "Sincronizzazione cloud attiva" : "Puoi continuare anche senza account"}</strong><p>{account ? "Cartelle, set, progressi e preferenze di studio vengono salvati nel tuo account. I set pubblici appaiono nella biblioteca Esplora." : "Senza accesso i dati restano soltanto su questo dispositivo e non puoi votare i set pubblici."}</p></div>
   </section></div>;
 }
 
-function MobileNav({ view, onHome, onFolders, onExplore, onCreate }: { view: View; onHome: () => void; onFolders: () => void; onExplore: () => void; onCreate: () => void }) {
-  return <nav className="mobile-nav-new"><button className={view.name === "home" ? "active" : ""} type="button" onClick={onHome}><i className="icon-home" /><span>Spazio</span></button><button className={view.name === "folders" || view.name === "folder" ? "active" : ""} type="button" onClick={onFolders}><i className="icon-folder-line" /><span>Cartelle</span></button><button className="mobile-create" type="button" onClick={onCreate}>＋</button><button className={view.name === "explore" ? "active" : ""} type="button" onClick={onExplore}><i className="icon-search" /><span>Esplora</span></button></nav>;
+function MobileNav({ view, onHome, onFolders, onExplore, onClasses, onCreate }: { view: View; onHome: () => void; onFolders: () => void; onExplore: () => void; onClasses: () => void; onCreate: () => void }) {
+  return <nav className="mobile-nav-new"><button className={view.name === "home" ? "active" : ""} type="button" onClick={onHome}><i className="icon-home" /><span>Spazio</span></button><button className={view.name === "folders" || view.name === "folder" ? "active" : ""} type="button" onClick={onFolders}><i className="icon-folder-line" /><span>Cartelle</span></button><button className="mobile-create" type="button" onClick={onCreate}>＋</button><button className={view.name === "explore" ? "active" : ""} type="button" onClick={onExplore}><i className="icon-search" /><span>Esplora</span></button><button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={onClasses}><i className="icon-classes" /><span>Classi</span></button></nav>;
 }

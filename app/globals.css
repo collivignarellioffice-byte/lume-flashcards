@@ -7395,3 +7395,368 @@ button,
   .top-tools .notification-tool span { display: none; }
   .mobile-nav-new { grid-template-columns: repeat(5, 1fr); }
 }
+
+/* Folder and set-creation refinement — September 2026. */
+.folder-page-new {
+  max-width: none;
+  width: calc(100% + 104px);
+}
+
+.folder-hero {
+  padding-left: clamp(34px, 5vw, 76px);
+  padding-right: clamp(34px, 5vw, 76px);
+}
+
+.folder-shelf {
+  max-width: none;
+  padding-left: clamp(34px, 5vw, 76px);
+  padding-right: clamp(34px, 5vw, 76px);
+}
+
+:root[data-theme="dark"] .folder-page-new,
+:root[data-theme="dark"] .folder-shelf {
+  background: var(--bg);
+}
+
+:root[data-theme="dark"] .section-select-button {
+  background: color-mix(in srgb, white 6%, var(--panel));
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #f5f2ec !important;
+}
+
+.deck-creator {
+  grid-template-rows: 86px minmax(0, 1fr);
+}
+
+.deck-creator-bar {
+  align-items: stretch;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 178px minmax(0, 1fr) 178px;
+  min-width: 0;
+}
+
+.deck-creator-brand {
+  border-right: 1px solid var(--line);
+  display: grid;
+  gap: 4px;
+  padding: 14px 25px 11px;
+}
+
+.deck-creator-brand strong {
+  font-size: 22px;
+  font-weight: 520;
+  letter-spacing: -0.05em;
+}
+
+.deck-creator-brand button {
+  align-self: end;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  justify-self: start;
+  padding: 0;
+}
+
+.deck-creator .creator-stepper {
+  border-bottom: 0;
+  min-width: 0;
+  padding: 0 clamp(18px, 7vw, 120px);
+}
+
+.deck-creator .creator-stepper button.active {
+  border-bottom-color: var(--creator-accent);
+}
+
+.deck-creator .creator-stepper button.active b {
+  background: var(--creator-accent);
+  border-color: var(--creator-accent);
+  color: var(--creator-accent-text);
+}
+
+.creator-save-button {
+  align-self: center;
+  background: var(--creator-accent);
+  border: 1px solid color-mix(in srgb, var(--creator-accent) 72%, #24231f);
+  border-radius: 8px;
+  color: var(--creator-accent-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  justify-self: end;
+  margin-right: 24px;
+  min-height: 43px;
+  padding: 10px 17px;
+}
+
+.deck-creator ::selection {
+  background: color-mix(in srgb, var(--creator-accent) 60%, transparent);
+  color: var(--text);
+}
+
+.deck-creator input:focus,
+.deck-creator select:focus,
+.deck-creator .rich-area:focus {
+  border-color: var(--creator-accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--creator-accent) 36%, transparent) !important;
+  outline: 0;
+}
+
+.deck-creator .color-palette > button.selected {
+  box-shadow: 0 0 0 2px var(--creator-accent);
+}
+
+.deck-details-layout {
+  height: 100%;
+  min-height: 0;
+}
+
+.deck-details-layout .creator-fields {
+  align-content: center;
+  display: grid;
+  margin: 0 auto;
+  max-width: 650px;
+  overflow: hidden;
+  padding: 24px 58px 30px 34px;
+}
+
+.deck-details-layout .creator-fields h1 {
+  font-size: clamp(34px, 3vw, 48px);
+  margin: 0 0 10px;
+}
+
+.deck-details-layout .creator-fields > p {
+  font-size: 12px;
+  margin-bottom: 13px;
+}
+
+.deck-details-layout .field-clean {
+  gap: 6px;
+  margin-top: 11px;
+}
+
+.deck-details-layout .field-clean input,
+.deck-details-layout .field-clean select {
+  height: 44px;
+}
+
+.deck-details-layout .clean-fieldset {
+  margin-top: 16px;
+}
+
+.deck-details-layout .color-palette {
+  margin-top: 9px;
+}
+
+.emoji-input-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  position: relative;
+}
+
+.emoji-input-wrap input {
+  font-size: 18px;
+  padding-right: 48px;
+}
+
+.emoji-input-wrap button {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  position: absolute;
+  right: 2px;
+  top: 0;
+  width: 40px;
+}
+
+.emoji-field > small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.notebook-preview-column {
+  justify-content: center;
+  padding: 30px 48px;
+}
+
+.notebook-preview-column > span {
+  margin-bottom: 18px;
+}
+
+.notebook-preview-column .notebook {
+  height: min(445px, 58vh);
+  min-height: 330px;
+}
+
+.notebook:not(.community) > strong {
+  margin-top: 16px;
+}
+
+.notebook-emoji {
+  display: block;
+  font-size: 30px;
+  line-height: 1;
+  position: relative;
+  z-index: 2;
+}
+
+.notebook.has-emoji > strong {
+  margin-top: 20px;
+}
+
+.notebook > i {
+  font-size: 11px;
+  opacity: 0.88;
+}
+
+.readonly-set-title h2:empty::after {
+  color: var(--muted);
+  content: "Set senza nome";
+}
+
+.empty-summary-preview {
+  align-items: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: 13px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 350px;
+  padding: 38px;
+  text-align: center;
+}
+
+.empty-summary-preview strong {
+  font-size: 24px;
+  font-weight: 470;
+}
+
+.empty-summary-preview p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  max-width: 390px;
+}
+
+.study-simulation > h1:first-child {
+  margin-top: 0;
+}
+
+@media (max-width: 1160px) {
+  .folder-page-new {
+    width: calc(100% + 64px);
+  }
+
+  .deck-creator-bar {
+    grid-template-columns: 145px minmax(0, 1fr) 150px;
+  }
+
+  .deck-creator-brand {
+    padding-inline: 20px;
+  }
+
+  .deck-creator .creator-stepper {
+    padding-inline: 18px;
+  }
+
+  .creator-save-button {
+    margin-right: 16px;
+  }
+}
+
+@media (max-width: 860px) {
+  .folder-page-new {
+    width: calc(100% + 36px);
+  }
+
+  .deck-creator {
+    grid-template-rows: calc(110px + env(safe-area-inset-top)) minmax(0, 1fr);
+  }
+
+  .deck-creator-bar {
+    grid-template-columns: minmax(95px, 0.8fr) minmax(0, 2fr) minmax(104px, 0.8fr);
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .deck-creator-brand {
+    padding: 13px 14px 10px;
+  }
+
+  .deck-creator-brand strong {
+    font-size: 20px;
+  }
+
+  .deck-creator .creator-stepper {
+    padding-inline: 4px;
+  }
+
+  .deck-creator .creator-stepper button {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .deck-creator .creator-stepper span {
+    font-size: 9px;
+  }
+
+  .creator-save-button {
+    font-size: 10px;
+    margin-right: 10px;
+    min-height: 40px;
+    padding: 8px 10px;
+  }
+
+  .deck-details-layout {
+    height: auto;
+  }
+
+  .deck-details-layout .creator-fields {
+    overflow: visible;
+    padding: 32px 22px 38px;
+  }
+
+  .notebook-preview-column {
+    min-height: 500px;
+  }
+}
+
+@media (max-width: 390px) {
+  .folder-page-new {
+    width: calc(100% + 26px);
+  }
+
+  .deck-creator-bar {
+    grid-template-columns: 72px minmax(0, 1fr) 88px;
+  }
+
+  .deck-creator-brand {
+    padding-inline: 9px;
+  }
+
+  .deck-creator-brand strong {
+    font-size: 18px;
+  }
+
+  .deck-creator-brand button,
+  .deck-creator .creator-stepper span {
+    font-size: 8px;
+  }
+
+  .deck-creator .creator-stepper b {
+    height: 24px;
+    width: 24px;
+  }
+
+  .creator-save-button {
+    font-size: 9px;
+    margin-right: 6px;
+    padding-inline: 7px;
+  }
+}

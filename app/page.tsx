@@ -192,18 +192,20 @@ const patterns: Array<{ value: Pattern; label: string }> = [
   { value: "botanical", label: "Botanico" },
 ];
 
-const markdownPrompt = `Turn my rough study notes into a UTF-8 Markdown file named flashcards.md. Write exactly one flashcard per line using this format:
+const markdownPrompt = `Turn my rough study notes into a UTF-8 Markdown file named flashcards.md. Repeat this exact block for every flashcard:
+<!-- LUME_CARD -->
 term :: definition
 
-Reorder and deduplicate the concepts, correct obvious mistakes, and keep every definition clear and concise. Do not add headings, bullets, numbering, tables, code fences, comments, or any text before or after the flashcards.
+Use one concept per block. Reorder and deduplicate the concepts, correct obvious mistakes, and keep definitions clear and concise. Never merge two cards. Return only these blocks, with no headings, bullets, numbering, tables, or code fences.
 
 My rough notes:
 [PASTE HERE]`;
 
-const keywordMarkdownPrompt = `Turn my rough study notes into a UTF-8 Markdown file named flashcards.md. Write exactly one flashcard per line as:
+const keywordMarkdownPrompt = `Turn my rough study notes into a UTF-8 Markdown file named flashcards.md. Repeat this exact block for every flashcard:
+<!-- LUME_CARD -->
 term :: definition
 
-Reorder and deduplicate the concepts, correct obvious mistakes, and keep definitions accurate. In every definition, wrap only its most useful conceptual anchors in **double asterisks**: use 1 anchor for a short definition, 2 for a medium definition, and no more than 3 for a long one. Choose ideas that can trigger oral recall, not generic words. Do not add headings, bullets, numbering, tables, code fences, comments, or extra text.
+Use one concept per block. Reorder and deduplicate the concepts, correct obvious mistakes, and never merge two cards. In each definition, wrap only its best recall anchors in **double asterisks**: 1 for a short definition, 2 for a medium one, and no more than 3 for a long one. Return only these blocks, with no headings, bullets, numbering, tables, or code fences.
 
 My rough notes:
 [PASTE HERE]`;
@@ -311,6 +313,73 @@ function normalizeRichText(value: string) {
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/__([^_]+)__/g, "<u>$1</u>")
     .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+}
+
+function parseMarkdownFlashcards(value: string) {
+  const source = value
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/^```(?:markdown|md)?\s*$/gim, "")
+    .replace(/^```\s*$/gim, "")
+    .trim();
+
+  const toPair = (block: string) => {
+    const compact = block.replace(/\s+/g, " ").trim();
+    const separator = compact.indexOf("::");
+    if (separator <= 0) return null;
+    const front = compact.slice(0, separator).replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "").trim();
+    const back = compact.slice(separator + 2).trim();
+    return front && back
+      ? { front: normalizeRichText(front), back: normalizeRichText(back) }
+      : null;
+  };
+
+  const marker = /<!--\s*LUME_CARD\s*-->/i;
+  if (marker.test(source)) {
+    return source
+      .split(/<!--\s*LUME_CARD\s*-->/gi)
+      .map(toPair)
+      .filter((item): item is { front: string; back: string } => Boolean(item));
+  }
+
+  const lines = source.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length && lines.every((line) => (line.match(/::/g) ?? []).length === 1)) {
+    return lines
+      .map(toPair)
+      .filter((item): item is { front: string; back: string } => Boolean(item));
+  }
+
+  // Alcuni editor e LLM inseriscono ritorni a capo nel mezzo di una coppia o
+  // subito prima del termine seguente. Ricostruiamo il testo e usiamo l'ultima
+  // frase completa prima di ogni :: come confine tra due flashcard.
+  const compact = lines.join(" ").replace(/\s+/g, " ").trim();
+  const separators = Array.from(compact.matchAll(/::/g), (match) => match.index);
+  if (!separators.length) return [];
+
+  const starts = [0];
+  for (let index = 1; index < separators.length; index += 1) {
+    const previousSeparatorEnd = separators[index - 1] + 2;
+    const betweenCards = compact.slice(previousSeparatorEnd, separators[index]);
+    let boundary = -1;
+    for (const match of betweenCards.matchAll(/[.!?](?:["'’”)}\]]*)\s+(?=\S)/g)) {
+      boundary = (match.index ?? 0) + match[0].length;
+    }
+    starts.push(boundary >= 0 ? previousSeparatorEnd + boundary : previousSeparatorEnd);
+  }
+
+  return separators
+    .map((separator, index) => {
+      const front = compact
+        .slice(starts[index], separator)
+        .replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")
+        .trim();
+      const backEnd = index + 1 < starts.length ? starts[index + 1] : compact.length;
+      const back = compact.slice(separator + 2, backEnd).trim();
+      return front && back
+        ? { front: normalizeRichText(front), back: normalizeRichText(back) }
+        : null;
+    })
+    .filter((item): item is { front: string; back: string } => Boolean(item));
 }
 
 function normalizeDeck(deck: Deck): Deck {
@@ -2528,11 +2597,8 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
   };
   const importMarkdown = async (file?: File) => {
     if (!file || !/\.md$/i.test(file.name)) { setImportMessage("Puoi importare soltanto un file .md."); return; }
-    const parsed = (await file.text()).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-      const separator = line.indexOf("::");
-      return separator > 0 ? { front: normalizeRichText(line.slice(0, separator).trim()), back: normalizeRichText(line.slice(separator + 2).trim()) } : null;
-    }).filter((item): item is DraftPair => Boolean(item?.front && item.back));
-    if (!parsed.length) { setImportMessage("Nessuna coppia valida. Usa parola :: definizione su ogni riga."); return; }
+    const parsed: DraftPair[] = parseMarkdownFlashcards(await file.text());
+    if (!parsed.length) { setImportMessage("Nessuna coppia valida. Ogni scheda deve contenere termine :: definizione."); return; }
     setPairs(parsed);
     setPreviewIndex(0);
     setImportMessage(`${parsed.length} flashcard importate.`);

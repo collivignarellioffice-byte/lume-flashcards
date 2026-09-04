@@ -31,6 +31,7 @@ type Visibility = "private" | "public";
 type Pattern = "plain" | "lines" | "grid" | "waves" | "dots" | "botanical";
 type Order = "sequential" | "random";
 type Direction = "front-first" | "back-first";
+type StudyMode = "learn" | "test";
 type StudyFont = "current" | "comic" | "helvetica" | "serif" | "mono";
 type CardColorMode = "single" | "random";
 type PublicVote = -1 | 0 | 1 | 2;
@@ -101,10 +102,16 @@ type DeleteRequest = {
 type StudyState = {
   deckIds: string[];
   cardIds: string[];
+  initialCardIds: string[];
   index: number;
   flipped: boolean;
+  mode: StudyMode | null;
   known: number;
   missed: string[];
+  learnedIds: string[];
+  attempts: number;
+  attemptsByCard: Record<string, number>;
+  missesByCard: Record<string, number>;
   streak: number;
   bestStreak: number;
   complete: boolean;
@@ -113,6 +120,8 @@ type StudyState = {
   font: StudyFont;
   cardColor: string;
 };
+
+const LEARN_REVIEW_GAP = 3;
 
 const LEGACY_STORE_KEY = "lume-clean-v2";
 const STORE_PREFIX = "lume-library-v3";
@@ -824,10 +833,16 @@ export default function LumeApp() {
       setStudy({
         deckIds,
         cardIds,
+        initialCardIds: cardIds,
         index: 0,
         flipped: false,
+        mode: null,
         known: 0,
         missed: [],
+        learnedIds: [],
+        attempts: 0,
+        attemptsByCard: {},
+        missesByCard: {},
         streak: 0,
         bestStreak: 0,
         complete: false,
@@ -848,9 +863,29 @@ export default function LumeApp() {
     [studyLibrary],
   );
 
+  const chooseStudyMode = useCallback((mode: StudyMode) => {
+    setStudy((current) => current ? {
+      ...current,
+      mode,
+      cardIds: [...current.initialCardIds],
+      index: 0,
+      flipped: false,
+      known: 0,
+      missed: [],
+      learnedIds: [],
+      attempts: 0,
+      attemptsByCard: {},
+      missesByCard: {},
+      streak: 0,
+      bestStreak: 0,
+      complete: false,
+    } : current);
+    setShowKeywords(false);
+  }, []);
+
   const answerStudy = useCallback(
     (known: boolean) => {
-      if (!studyEntry || !study) return;
+      if (!studyEntry || !study?.mode) return;
       const updateDeck = (deck: Deck) => deck.id !== studyEntry.deck.id
         ? deck
         : {
@@ -874,15 +909,38 @@ export default function LumeApp() {
         setDecks((current) => current.map(updateDeck));
       }
       setStudy((current) => {
-        if (!current) return current;
+        if (!current?.mode) return current;
+        const cardId = studyEntry.card.id;
+        const nextCardIds = [...current.cardIds];
+        if (!known && current.mode === "learn") {
+          const revisitAt = Math.min(nextCardIds.length, current.index + LEARN_REVIEW_GAP + 1);
+          nextCardIds.splice(revisitAt, 0, cardId);
+        }
         const nextStreak = known ? current.streak + 1 : 0;
-        const atEnd = current.index >= current.cardIds.length - 1;
+        const atEnd = current.index >= nextCardIds.length - 1;
+        const learnedIds = known && !current.learnedIds.includes(cardId)
+          ? [...current.learnedIds, cardId]
+          : current.learnedIds;
+        const missed = !known && !current.missed.includes(cardId)
+          ? [...current.missed, cardId]
+          : current.missed;
         return {
           ...current,
+          cardIds: nextCardIds,
           index: atEnd ? current.index : current.index + 1,
           flipped: false,
           known: current.known + (known ? 1 : 0),
-          missed: known ? current.missed : [...current.missed, studyEntry.card.id],
+          missed,
+          learnedIds,
+          attempts: current.attempts + 1,
+          attemptsByCard: {
+            ...current.attemptsByCard,
+            [cardId]: (current.attemptsByCard[cardId] ?? 0) + 1,
+          },
+          missesByCard: {
+            ...current.missesByCard,
+            [cardId]: (current.missesByCard[cardId] ?? 0) + (known ? 0 : 1),
+          },
           streak: nextStreak,
           bestStreak: Math.max(current.bestStreak, nextStreak),
           complete: atEnd,
@@ -895,7 +953,7 @@ export default function LumeApp() {
 
   const moveStudy = useCallback((delta: -1 | 1) => {
     setStudy((current) => {
-      if (!current || current.complete) return current;
+      if (!current || current.complete || current.mode) return current;
       const nextIndex = Math.min(current.cardIds.length - 1, Math.max(0, current.index + delta));
       if (nextIndex === current.index) return current;
       return { ...current, index: nextIndex, flipped: false };
@@ -937,6 +995,7 @@ export default function LumeApp() {
         ...changes,
         order: nextOrder,
         cardIds: nextIds,
+        initialCardIds: current.mode ? current.initialCardIds : nextIds,
         index: nextIndex,
         flipped: changes.direction && changes.direction !== current.direction ? false : current.flipped,
       };
@@ -949,6 +1008,10 @@ export default function LumeApp() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (studySettingsOpen) {
         if (event.key === "Escape") setStudySettingsOpen(false);
+        return;
+      }
+      if (!study.mode) {
+        if (event.key === "Escape") setStudy(null);
         return;
       }
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']")) return;
@@ -974,6 +1037,7 @@ export default function LumeApp() {
     };
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code !== "Space") return;
+      if (!study.mode) return;
       event.preventDefault();
       if (spaceHoldTimer.current !== null) {
         window.clearTimeout(spaceHoldTimer.current);
@@ -1178,13 +1242,13 @@ export default function LumeApp() {
         theme={theme}
         state={study}
         entry={studyEntry}
+        library={studyLibrary}
         showKeywords={showKeywords}
         settingsOpen={studySettingsOpen}
+        onChooseMode={chooseStudyMode}
         onFlip={() => setStudy((current) => (current ? { ...current, flipped: !current.flipped } : current))}
         onKnow={() => answerStudy(true)}
         onMiss={() => answerStudy(false)}
-        onPrevious={() => moveStudy(-1)}
-        onNext={() => moveStudy(1)}
         onPin={toggleStudyPin}
         onPinComment={updateStudyPinComment}
         onOpenSettings={() => setStudySettingsOpen(true)}
@@ -1195,8 +1259,12 @@ export default function LumeApp() {
           window.setTimeout(() => setShowKeywords(false), 3000);
         }}
         onRestartMissed={() => {
-          if (!study.missed.length) return;
-          setStudy({ ...study, cardIds: study.missed, index: 0, flipped: false, known: 0, missed: [], streak: 0, complete: false });
+          const difficultIds = difficultStudyCardIds(study);
+          if (!difficultIds.length) return;
+          setStudy({ ...study, mode: "learn", initialCardIds: difficultIds, cardIds: difficultIds, index: 0, flipped: false, known: 0, missed: [], learnedIds: [], attempts: 0, attemptsByCard: {}, missesByCard: {}, streak: 0, bestStreak: 0, complete: false });
+        }}
+        onRestartAll={() => {
+          setStudy({ ...study, cardIds: [...study.initialCardIds], index: 0, flipped: false, known: 0, missed: [], learnedIds: [], attempts: 0, attemptsByCard: {}, missesByCard: {}, streak: 0, bestStreak: 0, complete: false });
         }}
         onExit={() => {
           setStudySettingsOpen(false);
@@ -2000,19 +2068,99 @@ function studyTextSize(value: string) {
   return "clamp(34px, 4vw, 52px)";
 }
 
-function StudyScreen({ theme, state, entry, showKeywords, settingsOpen, onFlip, onKnow, onMiss, onPrevious, onNext, onPin, onPinComment, onOpenSettings, onCloseSettings, onSettingsChange, onKeywords, onRestartMissed, onExit }: { theme: "light" | "dark"; state: StudyState; entry: { deck: Deck; card: Card } | null; showKeywords: boolean; settingsOpen: boolean; onFlip: () => void; onKnow: () => void; onMiss: () => void; onPrevious: () => void; onNext: () => void; onPin: () => void; onPinComment: (value: string) => void; onOpenSettings: () => void; onCloseSettings: () => void; onSettingsChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onKeywords: () => void; onRestartMissed: () => void; onExit: () => void }) {
-  if (state.complete) return <div className="study-screen complete"><button className="study-exit" type="button" onClick={onExit}>× Esci</button><section><span>Sessione completata</span><h1>{state.known} carte ricordate.</h1><p>Streak migliore: {state.bestStreak}. Le carte difficili restano disponibili per un altro giro.</p><div><button className="primary-dark" type="button" disabled={!state.missed.length} onClick={onRestartMissed}>Ripassa le difficili ({state.missed.length})</button><button className="outline-button" type="button" onClick={onExit}>Torna al mio spazio</button></div></section></div>;
+function studyDifficultyScore(state: StudyState, cardId: string) {
+  return (state.missesByCard[cardId] ?? 0) * 2 + (state.attemptsByCard[cardId] ?? 0);
+}
+
+function difficultStudyCardIds(state: StudyState) {
+  return Array.from(new Set(state.initialCardIds))
+    .filter((cardId) => (state.missesByCard[cardId] ?? 0) > 0)
+    .sort((a, b) => studyDifficultyScore(state, b) - studyDifficultyScore(state, a));
+}
+
+function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen, onFlip, onKnow, onMiss, onPin, onPinComment, onOpenSettings, onCloseSettings, onSettingsChange, onKeywords, onChooseMode, onRestartMissed, onRestartAll, onExit }: { theme: "light" | "dark"; state: StudyState; entry: { deck: Deck; card: Card } | null; library: Deck[]; showKeywords: boolean; settingsOpen: boolean; onFlip: () => void; onKnow: () => void; onMiss: () => void; onPin: () => void; onPinComment: (value: string) => void; onOpenSettings: () => void; onCloseSettings: () => void; onSettingsChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onKeywords: () => void; onChooseMode: (mode: StudyMode) => void; onRestartMissed: () => void; onRestartAll: () => void; onExit: () => void }) {
+  const firstDeck = library.find((deck) => state.deckIds.includes(deck.id));
+  const baseColor = state.cardColor || firstDeck?.color || "#91aaa4";
+  const difficultIds = difficultStudyCardIds(state);
+  const totalCards = new Set(state.initialCardIds).size;
+  const testScore = totalCards ? Math.round((state.learnedIds.length / totalCards) * 100) : 0;
+  const difficultCards = difficultIds.slice(0, 3).flatMap((cardId) => {
+    for (const deckId of state.deckIds) {
+      const deck = library.find((item) => item.id === deckId);
+      const card = deck?.cards.find((item) => item.id === cardId);
+      if (deck && card) return [{ deck, card }];
+    }
+    return [];
+  });
+
+  if (!state.mode) {
+    return (
+      <div className="study-mode-screen" style={{ "--study": baseColor } as React.CSSProperties}>
+        <header>
+          <button className="study-exit" type="button" onClick={onExit}>× Esci</button>
+          <strong>{firstDeck?.title ?? "Sessione di studio"}</strong>
+          <button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><i><b /><b /><b /></i><span>Impostazioni</span></button>
+        </header>
+        <main>
+          <span className="eyebrow">Nuova sessione</span>
+          <h1>Come vuoi studiare?</h1>
+          <p>Scegli il ritmo più adatto a questo ripasso. Potrai sempre cambiare modalità alla prossima sessione.</p>
+          <div className="study-mode-grid">
+            <button className="study-mode-card learn" type="button" onClick={() => onChooseMode("learn")}>
+              <span>01 · Impara</span>
+              <strong>Ripeti finché resta.</strong>
+              <p>Se non sai una carta, ricompare dopo 3 altre carte. Finisci solo quando le hai ricordate tutte.</p>
+              <em>Memorizzazione attiva →</em>
+            </button>
+            <button className="study-mode-card test" type="button" onClick={() => onChooseMode("test")}>
+              <span>02 · Test</span>
+              <strong>Una risposta, poi il risultato.</strong>
+              <p>Ogni carta appare una volta. Alla fine trovi il punteggio, gli errori e le carte da ripassare.</p>
+              <em>Verifica finale →</em>
+            </button>
+          </div>
+          <button className="study-mode-settings" type="button" onClick={onOpenSettings}>Ordine, verso e font</button>
+        </main>
+        {settingsOpen && <StudySettings state={state} onChange={onSettingsChange} onClose={onCloseSettings} />}
+      </div>
+    );
+  }
+
+  if (state.complete) {
+    const isTest = state.mode === "test";
+    return (
+      <div className="study-screen complete study-results" style={{ "--study": baseColor } as React.CSSProperties}>
+        <button className="study-exit" type="button" onClick={onExit}>× Esci</button>
+        <section>
+          <span>{isTest ? "Test completato" : "Sessione Impara completata"}</span>
+          {isTest ? <><strong className="study-score">{testScore}%</strong><h1>{state.learnedIds.length} risposte corrette su {totalCards}.</h1></> : <h1>Hai imparato tutte le {totalCards} carte.</h1>}
+          <div className="study-result-metrics">
+            <article><span>{isTest ? "Corrette" : "Tentativi"}</span><strong>{isTest ? state.learnedIds.length : state.attempts}</strong></article>
+            <article><span>Più difficili</span><strong>{difficultIds.length}</strong></article>
+            <article><span>Streak migliore</span><strong>{state.bestStreak}</strong></article>
+          </div>
+          {difficultCards.length > 0 && <div className="study-difficult-list"><span>Le più difficili della sessione</span><ol>{difficultCards.map(({ deck, card }) => <li key={card.id}><div><RichText value={card.front} /><small>{deck.title}</small></div><strong>{state.missesByCard[card.id]} {state.missesByCard[card.id] === 1 ? "errore" : "errori"}</strong></li>)}</ol></div>}
+          <div className="study-result-actions">
+            {difficultIds.length > 0 && <button className="primary-dark" type="button" onClick={onRestartMissed}>{isTest ? "Impara dagli errori" : "Ripassa le più difficili"} ({difficultIds.length})</button>}
+            <button className="outline-button" type="button" onClick={onRestartAll}>Rifai {isTest ? "il test" : "la sessione"}</button>
+            <button className="text-button" type="button" onClick={onExit}>Torna al mio spazio</button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   if (!entry) return null;
   const keywords = extractKeywords(entry.card.back);
   const firstValue = state.direction === "front-first" ? entry.card.front : entry.card.back;
   const secondValue = state.direction === "front-first" ? entry.card.back : entry.card.front;
-  const baseColor = state.cardColor || entry.deck.color;
   const cardColor = theme === "dark" ? darken(baseColor, 0.46) : tint(baseColor, 0.84);
   const secondColor = theme === "dark" ? darken(baseColor, 0.30) : tint(baseColor, 0.72);
+  const modeLabel = state.mode === "learn" ? "Impara" : "Test";
   return (
     <div className="study-screen" style={{ "--study": baseColor, "--study-soft": cardColor, "--study-back": secondColor, "--study-font": studyFontStack(state.font) } as React.CSSProperties}>
-      <header><button className="study-exit" type="button" onClick={onExit}>× Esci</button><div><strong>{entry.deck.title}</strong><span>{state.index + 1} / {state.cardIds.length}</span></div><div className="study-session-meta"><span>{state.streak} streak</span><span>{state.known} so · {state.missed.length} rivedo</span><button className={entry.card.pinned ? "pin-button pinned" : "pin-button"} type="button" onClick={onPin} aria-label={entry.card.pinned ? "Rimuovi pin dalla flashcard" : "Metti un pin alla flashcard"}><i /> <span>{entry.card.pinned ? "Con pin" : "Pin"}</span></button><button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><i><b /><b /><b /></i><span>Impostazioni</span></button></div></header>
-      <main><p>Quanto ti è sembrata familiare?</p><button key={entry.card.id} className={state.flipped ? "study-card flipped" : "study-card"} type="button" onClick={onFlip}><span className="study-card-inner"><span className="study-face study-front" style={{ "--card-font-size": studyTextSize(firstValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Domanda" : "Risposta"}</small><RichText value={firstValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span><span className="study-face study-back" style={{ "--card-font-size": studyTextSize(secondValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Risposta" : "Domanda"}</small><RichText value={secondValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span></span>{showKeywords && keywords.length > 0 && <span className="keyword-overlay" style={{ "--keyword-font-size": studyTextSize(entry.card.back) } as React.CSSProperties}><small>Keywords</small><RichText value={entry.card.back} /><em>Rilascia la barra spaziatrice per nasconderle</em></span>}</button>{entry.card.pinned && <label className="study-pin-note"><span>Nota per la revisione</span><input value={entry.card.pinComment ?? ""} onChange={(event) => onPinComment(event.target.value)} placeholder="Es. controllare la definizione o correggere un errore…" /></label>}<div className="study-navigation"><button type="button" disabled={state.index === 0} onClick={onPrevious}>← <span>Precedente</span></button><span>Usa le frecce per navigare</span><button type="button" disabled={state.index >= state.cardIds.length - 1} onClick={onNext}><span>Successiva</span> →</button></div><div className="study-actions"><button type="button" onClick={onKnow}><b>1</b><span><strong>La so</strong><small>Passa alla prossima</small></span></button><button type="button" onClick={onMiss}><b>2</b><span><strong>Non la so</strong><small>La rivedrai alla fine</small></span></button></div>{keywords.length > 0 && <button className="keyword-button" type="button" onClick={onKeywords}>Tieni premuta la barra spaziatrice · Mostra keywords</button>}<p className="study-shortcuts">1 La so · 2 Non la so · 3 Pin · ← → Naviga</p></main>
+      <header><button className="study-exit" type="button" onClick={onExit}>× Esci</button><div><strong>{entry.deck.title}</strong><span>{modeLabel} · {state.index + 1} / {state.cardIds.length}</span></div><div className="study-session-meta"><span>{state.streak} streak</span><span>{state.mode === "learn" ? `${state.learnedIds.length} imparate · ${difficultIds.length} difficili` : `${state.attempts} risposte · ${difficultIds.length} errori`}</span><button className={entry.card.pinned ? "pin-button pinned" : "pin-button"} type="button" onClick={onPin} aria-label={entry.card.pinned ? "Rimuovi pin dalla flashcard" : "Metti un pin alla flashcard"}><i /> <span>{entry.card.pinned ? "Con pin" : "Pin"}</span></button><button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><i><b /><b /><b /></i><span>Impostazioni</span></button></div></header>
+      <main><p>{state.mode === "learn" ? "La ricordi ora?" : "Conoscevi la risposta?"}</p><button key={`${entry.card.id}-${state.index}`} className={state.flipped ? "study-card flipped" : "study-card"} type="button" onClick={onFlip}><span className="study-card-inner"><span className="study-face study-front" style={{ "--card-font-size": studyTextSize(firstValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Domanda" : "Risposta"}</small><RichText value={firstValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span><span className="study-face study-back" style={{ "--card-font-size": studyTextSize(secondValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Risposta" : "Domanda"}</small><RichText value={secondValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span></span>{showKeywords && keywords.length > 0 && <span className="keyword-overlay" style={{ "--keyword-font-size": studyTextSize(entry.card.back) } as React.CSSProperties}><small>Keywords</small><RichText value={entry.card.back} /><em>Rilascia la barra spaziatrice per nasconderle</em></span>}</button>{entry.card.pinned && <label className="study-pin-note"><span>Nota per la revisione</span><input value={entry.card.pinComment ?? ""} onChange={(event) => onPinComment(event.target.value)} placeholder="Es. controllare la definizione o correggere un errore…" /></label>}<div className="study-sequence-note"><span>{state.mode === "learn" ? "Le carte non ricordate tornano dopo 3 altre carte." : "Ogni carta conta una sola volta nel punteggio."}</span><strong>{state.mode === "learn" ? `${state.learnedIds.length}/${totalCards} imparate` : `${state.attempts}/${totalCards} risposte`}</strong></div><div className="study-actions"><button type="button" onClick={onKnow}><b>1</b><span><strong>La so</strong><small>{state.mode === "learn" ? "Questa carta è imparata" : "Segna come corretta"}</small></span></button><button type="button" onClick={onMiss}><b>2</b><span><strong>Non la so</strong><small>{state.mode === "learn" ? "Torna dopo 3 altre carte" : "Segna come errore"}</small></span></button></div>{keywords.length > 0 && <button className="keyword-button" type="button" onClick={onKeywords}>Tieni premuta la barra spaziatrice · Mostra keywords</button>}<p className="study-shortcuts">Spazio gira · 1 La so · 2 Non la so · 3 Pin</p></main>
       {settingsOpen && <StudySettings state={state} onChange={onSettingsChange} onClose={onCloseSettings} />}
     </div>
   );

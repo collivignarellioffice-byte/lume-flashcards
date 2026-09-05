@@ -118,6 +118,12 @@ type Deck = {
   shared?: boolean;
   sharedOwnerId?: string;
   sharedOwnerName?: string;
+  publicFolder?: {
+    id: string;
+    title: string;
+    color: string;
+    icon?: string;
+  } | null;
 };
 
 type CloudStatus = "unavailable" | "checking" | "signed-out" | "loading" | "syncing" | "synced" | "error";
@@ -426,6 +432,7 @@ function toCloudDeck(deck: Deck): CloudDeck {
     })),
     createdAt: deck.createdAt,
     lastStudied: deck.lastStudied,
+    publicFolder: deck.publicFolder,
   };
 }
 
@@ -546,17 +553,30 @@ function isLegacyDemoLibrary(library: CloudLibrary) {
 
 function publicDecksFromLibrary(library: CloudLibrary) {
   const folderMap = new Map(library.folders.map((folder) => [folder.id, folder]));
-  const folderIsPublic = (folderId: string | null) => {
+  const publicFolderFor = (folderId: string | null) => {
     const visited = new Set<string>();
     let current = folderId ? folderMap.get(folderId) : undefined;
+    const ancestors: CloudLibrary["folders"] = [];
     while (current && !visited.has(current.id)) {
-      if (current.visibility === "public") return true;
+      ancestors.unshift(current);
       visited.add(current.id);
       current = current.parentId ? folderMap.get(current.parentId) : undefined;
     }
-    return false;
+    return ancestors.find((folder) => folder.visibility === "public");
   };
-  return library.decks.filter((deck) => deck.visibility === "public" || folderIsPublic(deck.folderId));
+  return library.decks.flatMap((deck) => {
+    const publicFolder = publicFolderFor(deck.folderId);
+    if (deck.visibility !== "public" && !publicFolder) return [];
+    return [{
+      ...deck,
+      publicFolder: publicFolder ? {
+        id: publicFolder.id,
+        title: publicFolder.title,
+        color: publicFolder.color,
+        icon: publicFolder.icon,
+      } : null,
+    }];
+  });
 }
 
 function formatRelative(timestamp?: number) {
@@ -1025,7 +1045,9 @@ export default function LumeApp() {
     [classWorkspace, account?.uid],
   );
   const studyLibrary = useMemo(() => [...decks, ...publicDecks, ...sharedDecks], [decks, publicDecks, sharedDecks]);
-  const exploreDecks = cloudIsConfigured() ? publicDecks : decks.filter(deckIsPublic);
+  const exploreDecks = cloudIsConfigured()
+    ? publicDecks
+    : publicDecksFromLibrary(cloudLibrarySnapshot(folders, decks.filter(deckIsPublic), studyDays, focusMinutes)).map(fromCloudDeck);
 
   const resolveStudyCard = useCallback(
     (state: StudyState | null) => {
@@ -2294,15 +2316,64 @@ function FolderLibrary({ folders, decks, onOpen, onCreate }: { folders: Folder[]
 }
 
 function Explore({ search, onSearch, decks, cloudStatus, onOpen }: { search: string; onSearch: (value: string) => void; decks: Deck[]; cloudStatus: CloudStatus; onOpen: (id: string) => void }) {
-  const visible = decks.filter((deck) => `${deck.title} ${deck.description}`.toLowerCase().includes(search.toLowerCase()));
+  const [openFolderKey, setOpenFolderKey] = useState<string | null>(null);
+  const normalizedSearch = search.trim().toLocaleLowerCase("it");
+  const folderGroups = useMemo(() => {
+    const groups = new Map<string, { key: string; folder: NonNullable<Deck["publicFolder"]>; ownerId: string; ownerName: string; decks: Deck[] }>();
+    decks.forEach((deck) => {
+      if (!deck.publicFolder) return;
+      const key = `${deck.ownerId ?? "community"}:${deck.publicFolder.id}`;
+      const current = groups.get(key);
+      if (current) current.decks.push(deck);
+      else groups.set(key, {
+        key,
+        folder: deck.publicFolder,
+        ownerId: deck.ownerId ?? "community",
+        ownerName: deck.ownerName || "Studente Lume",
+        decks: [deck],
+      });
+    });
+    return Array.from(groups.values());
+  }, [decks]);
+  const visibleFolders = folderGroups.filter((group) => {
+    if (!normalizedSearch) return true;
+    return `${group.folder.title} ${group.ownerName}`.toLocaleLowerCase("it").includes(normalizedSearch)
+      || group.decks.some((deck) => `${deck.title} ${deck.description}`.toLocaleLowerCase("it").includes(normalizedSearch));
+  });
+  const independentDecks = decks.filter((deck) => !deck.publicFolder && `${deck.title} ${deck.description} ${deck.ownerName ?? ""}`.toLocaleLowerCase("it").includes(normalizedSearch));
+  const openGroup = folderGroups.find((group) => group.key === openFolderKey) ?? null;
+  const openDecks = openGroup
+    ? (!normalizedSearch || `${openGroup.folder.title} ${openGroup.ownerName}`.toLocaleLowerCase("it").includes(normalizedSearch)
+      ? openGroup.decks
+      : openGroup.decks.filter((deck) => `${deck.title} ${deck.description}`.toLocaleLowerCase("it").includes(normalizedSearch)))
+    : [];
+
+  if (openGroup) {
+    const cardCount = openGroup.decks.reduce((sum, deck) => sum + deck.cards.length, 0);
+    return (
+      <div className="explore-page public-folder-view" style={{ "--public-folder": openGroup.folder.color } as React.CSSProperties}>
+        <button className="explore-back" type="button" onClick={() => setOpenFolderKey(null)}><TablerIcon name="chevron-left" />Esplora</button>
+        <section className="public-folder-hero">
+          <span><TablerIcon name={normalizeLumeIcon(openGroup.folder.icon, "folder")} /></span>
+          <div><small>Cartella pubblica · di @{openGroup.ownerName}</small><h1>{openGroup.folder.title}</h1><p>{openGroup.decks.length} set · {cardCount} flashcard</p></div>
+        </section>
+        <label className="search-box"><TablerIcon name="search" /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Cerca nei set della cartella…" /></label>
+        <div className="notebook-grid public-grid">
+          {openDecks.map((deck) => <Notebook key={deck.id} deck={deck} onOpen={() => onOpen(deck.id)} />)}
+          {!openDecks.length && <p className="empty-copy">Nessun set della cartella corrisponde alla ricerca.</p>}
+        </div>
+      </div>
+    );
+  }
+
+  const hasResults = visibleFolders.length > 0 || independentDecks.length > 0;
   return (
     <div className="explore-page">
-      <div className="page-intro"><h1>Esplora flashcards</h1><p>Cerca tra i set pubblicati dalla comunità. Puoi aprirli, studiarli e lasciare una valutazione.</p></div>
+      <div className="page-intro"><h1>Esplora flashcards</h1><p>Cerca tra le cartelle e i set pubblicati dalla comunità. Puoi aprirli, studiarli e lasciare una valutazione.</p></div>
       <label className="search-box"><TablerIcon name="search" /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Cerca parole chiave, materie o titoli…" /></label>
-      <div className="notebook-grid public-grid">
-        {visible.map((deck) => <Notebook key={deck.id} deck={deck} onOpen={() => onOpen(deck.id)} />)}
-        {!visible.length && <p className="empty-copy">{cloudStatus === "checking" || cloudStatus === "loading" ? "Sto caricando la biblioteca pubblica…" : "Nessun set pubblico corrisponde alla ricerca."}</p>}
-      </div>
+      {visibleFolders.length > 0 && <section className="public-explore-section"><div className="section-title"><h2>Cartelle pubbliche</h2><span>{visibleFolders.length}</span></div><div className="folder-card-grid public-folder-grid">{visibleFolders.map((group) => <button className="folder-card public-folder-card" style={{ "--folder": group.folder.color, "--folder-text": getContrast(group.folder.color) } as React.CSSProperties} type="button" key={group.key} onClick={() => setOpenFolderKey(group.key)}><span className="folder-tab" /><span className="folder-body"><TablerIcon name={normalizeLumeIcon(group.folder.icon, "folder")} /><small>Di @{group.ownerName}</small><strong>{group.folder.title}</strong><em>{group.decks.length} set · {group.decks.reduce((sum, deck) => sum + deck.cards.length, 0)} flashcard</em></span></button>)}</div></section>}
+      {independentDecks.length > 0 && <section className="public-explore-section"><div className="section-title"><h2>Set indipendenti</h2><span>{independentDecks.length}</span></div><div className="notebook-grid public-grid">{independentDecks.map((deck) => <Notebook key={deck.id} deck={deck} onOpen={() => onOpen(deck.id)} />)}</div></section>}
+      {!hasResults && <p className="empty-copy public-empty">{cloudStatus === "checking" || cloudStatus === "loading" ? "Sto caricando la biblioteca pubblica…" : "Nessuna cartella o set pubblico corrisponde alla ricerca."}</p>}
     </div>
   );
 }
@@ -2724,9 +2795,9 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
     return (
       <div className="study-mode-screen" style={{ "--study": baseColor } as React.CSSProperties}>
         <header>
-          <button className="study-exit" type="button" onClick={onExit}>× Esci</button>
+          <button className="study-exit" type="button" onClick={onExit} aria-label="Esci dallo studio"><TablerIcon name="x" /></button>
           <strong>{firstDeck ? firstDeck.title || "Set senza nome" : "Sessione di studio"}</strong>
-          <button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><i><b /><b /><b /></i><span>Impostazioni</span></button>
+          <button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><TablerIcon name="adjustments-horizontal" /><span>Impostazioni</span></button>
         </header>
         <main>
           <span className="eyebrow">Nuova sessione</span>
@@ -2756,7 +2827,7 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
     const isTest = state.mode === "test";
     return (
       <div className="study-screen complete study-results" style={{ "--study": baseColor } as React.CSSProperties}>
-        <button className="study-exit" type="button" onClick={onExit}>× Esci</button>
+        <button className="study-exit" type="button" onClick={onExit} aria-label="Esci dallo studio"><TablerIcon name="x" /></button>
         <section>
           <span>{isTest ? "Test completato" : "Sessione Impara completata"}</span>
           {isTest ? <><strong className="study-score">{testScore}%</strong><h1>{state.learnedIds.length} risposte corrette su {totalCards}.</h1></> : <h1>Hai imparato tutte le {totalCards} carte.</h1>}
@@ -2783,6 +2854,7 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
   const cardColor = theme === "dark" ? darken(baseColor, 0.46) : tint(baseColor, 0.84);
   const secondColor = theme === "dark" ? darken(baseColor, 0.30) : tint(baseColor, 0.72);
   const modeLabel = state.mode === "learn" ? "Impara" : "Test";
+  const progressPercent = Math.min(100, Math.round(((state.index + 1) / Math.max(1, state.cardIds.length)) * 100));
   const startSwipe = (event: React.TouchEvent<HTMLButtonElement>) => {
     const touch = event.touches[0];
     if (!touch) return;
@@ -2802,9 +2874,8 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
   };
   return (
     <div className="study-screen" style={{ "--study": baseColor, "--study-soft": cardColor, "--study-back": secondColor, "--study-font": studyFontStack(state.font) } as React.CSSProperties}>
-      <header><button className="study-exit" type="button" onClick={onExit}>× Esci</button><div><strong>{entry.deck.title || "Set senza nome"}</strong><span>{modeLabel} · {state.index + 1} / {state.cardIds.length}</span></div><div className="study-session-meta"><span>{state.streak} streak</span><span>{state.mode === "learn" ? `${state.learnedIds.length} imparate · ${difficultIds.length} difficili` : `${state.attempts} risposte · ${difficultIds.length} errori`}</span><button className={entry.card.pinned ? "pin-button pinned" : "pin-button"} type="button" onClick={onPin} aria-label={entry.card.pinned ? "Rimuovi pin dalla flashcard" : "Metti un pin alla flashcard"}><i /> <span>{entry.card.pinned ? "Con pin" : "Pin"}</span></button><button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><i><b /><b /><b /></i><span>Impostazioni</span></button></div></header>
+      <header><button className="study-exit" type="button" onClick={onExit} aria-label="Esci dallo studio"><TablerIcon name="x" /></button><div><strong>{entry.deck.title || "Set senza nome"}</strong><span>{modeLabel}</span><small className="study-progress-percent">{progressPercent}%</small></div><div className="study-session-meta"><span>{state.streak} streak</span><span>{state.mode === "learn" ? `${state.learnedIds.length} imparate · ${difficultIds.length} difficili` : `${state.attempts} risposte · ${difficultIds.length} errori`}</span><button className={entry.card.pinned ? "pin-button pinned" : "pin-button"} type="button" onClick={onPin} aria-label={entry.card.pinned ? "Rimuovi pin dalla flashcard" : "Metti un pin alla flashcard"}><TablerIcon name="pin" /><span>{entry.card.pinned ? "Con pin" : "Pin"}</span></button><button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><TablerIcon name="adjustments-horizontal" /><span>Impostazioni</span></button></div></header>
       <main>
-        <p>{state.mode === "learn" ? "La ricordi ora?" : "Conoscevi la risposta?"}</p>
         <button
           key={`${entry.card.id}-${state.index}`}
           className={state.flipped ? "study-card flipped" : "study-card"}
@@ -2818,19 +2889,19 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
           }}
           onTouchStart={startSwipe}
           onTouchEnd={finishSwipe}
-          aria-label={`Flashcard ${state.index + 1} di ${state.cardIds.length}. Tocca per girarla.`}
+          aria-label={`Flashcard ${state.index + 1} di ${state.cardIds.length}. Attiva per girarla.`}
         >
           <span className="study-card-inner">
             <span className="study-face study-front" style={{ "--card-font-size": studyTextSize(firstValue) } as React.CSSProperties}>
-              <small>{state.direction === "front-first" ? "Domanda" : "Risposta"}</small>
+              <small>{state.direction === "front-first" ? "Fronte" : "Retro"}</small>
               <RichText value={firstValue} />
-              <em><span className="hardware-only">Spazio per girare</span><span className="touch-only">Tocca per girare</span></em>
+              <em className="hardware-only">Spazio per girare</em>
               {entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}
             </span>
             <span className="study-face study-back" style={{ "--card-font-size": studyTextSize(secondValue) } as React.CSSProperties}>
-              <small>{state.direction === "front-first" ? "Risposta" : "Domanda"}</small>
+              <small>{state.direction === "front-first" ? "Retro" : "Fronte"}</small>
               <RichText value={secondValue} />
-              <em><span className="hardware-only">Spazio per girare</span><span className="touch-only">Tocca per girare</span></em>
+              <em className="hardware-only">Spazio per girare</em>
               {entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}
             </span>
           </span>
@@ -2844,10 +2915,10 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
         </button>
         <nav className="study-floating-nav study-inline-nav" aria-label="Navigazione tra flashcard"><button type="button" disabled={state.index === 0} onClick={() => onMove(-1)} aria-label="Flashcard precedente"><TablerIcon name="chevron-left" /></button><button type="button" disabled={state.index >= state.cardIds.length - 1} onClick={() => onMove(1)} aria-label="Flashcard successiva"><TablerIcon name="chevron-right" /></button></nav>
         {entry.card.pinned && <label className="study-pin-note"><span>Nota per la revisione</span><input value={entry.card.pinComment ?? ""} onChange={(event) => onPinComment(event.target.value)} placeholder="Es. controllare la definizione o correggere un errore…" /></label>}
-        <div className="study-sequence-note"><span>{state.mode === "learn" ? "Le carte non ricordate tornano dopo 3 altre carte." : "Ogni carta conta una sola volta nel punteggio."}</span><strong>{state.mode === "learn" ? `${state.learnedIds.length}/${totalCards} imparate` : `${state.attempts}/${totalCards} risposte`}</strong></div>
+        <div className="study-sequence-note"><strong>{state.mode === "learn" ? `${state.learnedIds.length}/${totalCards} imparate` : `${state.attempts}/${totalCards} risposte`}</strong></div>
         <div className="study-actions">
-          <button type="button" onClick={onKnow}><b className="hardware-only">1</b><span><strong>La so</strong><small>{state.mode === "learn" ? "Questa carta è imparata" : "Segna come corretta"}</small></span></button>
-          <button type="button" onClick={onMiss}><b className="hardware-only">2</b><span><strong>Non la so</strong><small>{state.mode === "learn" ? "Torna dopo 3 altre carte" : "Segna come errore"}</small></span></button>
+          <button className="study-answer-icon miss" type="button" onClick={onMiss} aria-label="Non la so" title="Non la so"><TablerIcon name="x" /><b className="hardware-only">2</b></button>
+          <button className="study-answer-icon know" type="button" onClick={onKnow} aria-label="La so" title="La so"><TablerIcon name="check" /><b className="hardware-only">1</b></button>
         </div>
         {keywords.length > 0 && <button className={showKeywords ? "keyword-button active" : "keyword-button"} type="button" onClick={onKeywords} aria-pressed={showKeywords}><span className="hardware-only">Tieni premuta la barra spaziatrice · Mostra keywords</span><span className="touch-only">{showKeywords ? "Keywords visibili" : "Mostra keyword"}</span></button>}
         <p className="study-shortcuts hardware-only">Spazio gira · 1 La so · 2 Non la so · 3 Pin</p>

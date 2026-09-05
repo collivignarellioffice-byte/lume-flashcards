@@ -9144,3 +9144,230 @@ body {
     width: 54px;
   }
 }
+
+/* Public folders in Explore and a quieter study surface. */
+.public-explore-section {
+  margin-top: 46px;
+}
+
+.public-explore-section > .section-title {
+  margin-bottom: 22px;
+}
+
+.public-explore-section .public-grid {
+  margin-top: 0;
+}
+
+.public-folder-card .folder-body > small {
+  max-width: calc(100% - 44px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explore-back {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 8px 0;
+}
+
+.explore-back .tabler-icon {
+  height: 18px;
+  width: 18px;
+}
+
+.public-folder-hero {
+  align-items: center;
+  background: color-mix(in srgb, var(--public-folder) 76%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--public-folder) 64%, var(--line-strong));
+  border-radius: 16px;
+  display: flex;
+  gap: 24px;
+  margin-top: 18px;
+  padding: 34px;
+}
+
+.public-folder-hero > span {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel) 68%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: 50%;
+  display: flex;
+  flex: 0 0 68px;
+  height: 68px;
+  justify-content: center;
+}
+
+.public-folder-hero > span .tabler-icon {
+  height: 31px;
+  width: 31px;
+}
+
+.public-folder-hero small {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.public-folder-hero h1 {
+  font-size: clamp(35px, 5vw, 58px);
+  font-weight: 410;
+  letter-spacing: -0.055em;
+  line-height: 1;
+  margin: 9px 0 11px;
+}
+
+.public-folder-hero p {
+  color: color-mix(in srgb, var(--text) 68%, transparent);
+  font-size: 12px;
+  margin: 0;
+}
+
+.public-empty {
+  margin-top: 40px;
+}
+
+.study-exit {
+  align-items: center;
+  border-radius: 50%;
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  padding: 0;
+  width: 42px;
+}
+
+.study-exit:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.study-exit .tabler-icon,
+.pin-button .tabler-icon,
+.study-settings-button .tabler-icon {
+  height: 21px;
+  width: 21px;
+}
+
+.study-progress-percent {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 450;
+}
+
+.study-screen main > .study-card {
+  margin-top: 34px;
+}
+
+.study-sequence-note {
+  justify-content: flex-start;
+}
+
+.study-actions .study-answer-icon {
+  align-items: center;
+  color: var(--text);
+  display: flex;
+  justify-content: center;
+  min-height: 74px;
+  padding: 14px;
+  position: relative;
+  text-align: center;
+}
+
+.study-actions .study-answer-icon .tabler-icon {
+  height: 30px;
+  stroke-width: 1.8;
+  width: 30px;
+}
+
+.study-actions .study-answer-icon > b {
+  background: transparent;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 11px;
+  height: auto;
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: auto;
+}
+
+@media (max-width: 760px) {
+  .public-explore-section {
+    margin-top: 32px;
+  }
+
+  .public-folder-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .public-folder-hero {
+    align-items: flex-start;
+    gap: 15px;
+    padding: 22px 18px;
+  }
+
+  .public-folder-hero > span {
+    flex-basis: 48px;
+    height: 48px;
+  }
+
+  .public-folder-hero > span .tabler-icon {
+    height: 24px;
+    width: 24px;
+  }
+
+  .public-folder-hero h1 {
+    font-size: 34px;
+  }
+
+  .study-screen main > .study-card {
+    margin-top: 16px;
+  }
+
+  .study-face > em {
+    display: none !important;
+  }
+
+  .study-sequence-note {
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .study-actions .study-answer-icon {
+    min-height: 72px;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .study-screen main .study-inline-nav {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1024px) {
+  .hardware-only {
+    display: none !important;
+  }
+
+  .touch-only {
+    display: inline !important;
+  }
+
+  .focus-controls .touch-only {
+    display: inline-flex !important;
+  }
+
+  .study-screen main .study-inline-nav {
+    display: none !important;
+  }
+}

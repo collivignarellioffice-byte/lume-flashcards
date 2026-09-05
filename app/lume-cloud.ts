@@ -71,6 +71,12 @@ export type CloudDeck = {
   cards: CloudCard[];
   createdAt: number;
   lastStudied?: number;
+  publicFolder?: {
+    id: string;
+    title: string;
+    color: string;
+    icon?: string;
+  } | null;
 };
 
 export type CloudLibrary = {
@@ -202,6 +208,7 @@ function deckMeta(deck: CloudDeck) {
     cardColor: deck.cardColor,
     createdAt: deck.createdAt,
     lastStudied: deck.lastStudied,
+    publicFolder: deck.publicFolder,
   };
 }
 
@@ -222,6 +229,7 @@ function publicDeckMeta(deck: CloudDeck) {
     cardColorMode: meta.cardColorMode,
     cardColor: meta.cardColor,
     createdAt: meta.createdAt,
+    publicFolder: meta.publicFolder,
   };
 }
 

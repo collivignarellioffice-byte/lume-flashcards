@@ -59,6 +59,7 @@ import {
   type LumeClass,
   type LumeNotification,
 } from "./lume-classes";
+import { IconChoiceButton, IconPicker, normalizeLumeIcon, TablerIcon } from "./lume-icons";
 
 type Visibility = "private" | "public";
 type Pattern = "plain" | "lines" | "grid" | "waves" | "dots" | "botanical";
@@ -84,6 +85,7 @@ type Folder = {
   parentId: string | null;
   title: string;
   color: string;
+  icon?: string;
   visibility: Visibility;
   createdAt: number;
 };
@@ -95,7 +97,7 @@ type Deck = {
   description: string;
   color: string;
   pattern: Pattern;
-  emoji?: string;
+  icon?: string;
   visibility: Visibility;
   keywordHelp: boolean;
   order: Order;
@@ -214,6 +216,7 @@ function firstAccessLibrary(): CloudLibrary {
       parentId: null,
       title: "Esempio · Inizia da qui",
       color: "#91aaa4",
+      icon: "folder",
       visibility: "private",
       createdAt,
     }],
@@ -224,6 +227,7 @@ function firstAccessLibrary(): CloudLibrary {
       description: "Un piccolo set per provare lo studio",
       color: "#91aaa4",
       pattern: "waves",
+      icon: "bulb",
       visibility: "private",
       keywordHelp: true,
       order: "sequential",
@@ -374,10 +378,14 @@ function parseMarkdownFlashcards(value: string) {
     .filter((item): item is { front: string; back: string } => Boolean(item));
 }
 
+function normalizeFolder(folder: Folder): Folder {
+  return { ...folder, icon: normalizeLumeIcon(folder.icon, "folder") };
+}
+
 function normalizeDeck(deck: Deck): Deck {
   return {
     ...deck,
-    emoji: deck.emoji ?? "",
+    icon: normalizeLumeIcon(deck.icon, "book-2"),
     cardColorMode: deck.cardColorMode ?? "single",
     cardColor: deck.cardColor ?? deck.color,
     votes: deck.votes ?? 0,
@@ -399,7 +407,7 @@ function toCloudDeck(deck: Deck): CloudDeck {
     description: deck.description,
     color: deck.color,
     pattern: deck.pattern,
-    emoji: deck.emoji,
+    icon: deck.icon,
     visibility: deck.visibility,
     keywordHelp: deck.keywordHelp,
     order: deck.order,
@@ -482,7 +490,7 @@ function normalizeStoredLibrary(value: unknown): CloudLibrary | null {
     const decks = parsed.decks.map((deck) => toCloudDeck(fromCloudDeck(deck)));
     const restoredDays = Array.isArray(parsed.studyDays) ? parsed.studyDays.filter((day): day is string => typeof day === "string") : [];
     return {
-      folders: parsed.folders,
+      folders: parsed.folders.map((folder) => normalizeFolder(folder as Folder)),
       decks,
       studyDays: restoredDays.length ? restoredDays : decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []),
       focusMinutes: typeof parsed.focusMinutes === "number" ? Math.min(240, Math.max(1, parsed.focusMinutes)) : 25,
@@ -595,6 +603,7 @@ function migrateOldData(): { folders: Folder[]; decks: Deck[] } | null {
       parentId: null,
       title: String(folder.title ?? `Cartella ${index + 1}`),
       color: String(folder.color ?? colors[index % colors.length]),
+      icon: normalizeLumeIcon(folder.icon, "folder"),
       visibility: folder.visibility === "public" ? "public" : "private",
       createdAt: Number(folder.createdAt ?? Date.now() + index),
     }));
@@ -605,7 +614,7 @@ function migrateOldData(): { folders: Folder[]; decks: Deck[] } | null {
       description: String(deck.description ?? ""),
       color: String(deck.color ?? colors[index % colors.length]),
       pattern: (["plain", "lines", "grid", "waves", "dots", "botanical"] as string[]).includes(String(deck.pattern)) ? (deck.pattern as Pattern) : "plain",
-      emoji: typeof deck.emoji === "string" ? deck.emoji : "",
+      icon: normalizeLumeIcon(deck.icon, "book-2"),
       visibility: deck.visibility === "public" ? "public" : "private",
       keywordHelp: Boolean(deck.keywordHelp),
       order: deck.defaultOrder === "random" ? "random" : "sequential",
@@ -690,7 +699,7 @@ export default function LumeApp() {
   const syncChainRef = useRef<Promise<void>>(Promise.resolve());
   const localSnapshotRef = useRef<string | null>(null);
   const applyLibrary = useCallback((library: CloudLibrary) => {
-    setFolders(library.folders.map((folder) => ({ ...folder })));
+    setFolders(library.folders.map((folder) => normalizeFolder(folder as Folder)));
     setDecks(library.decks.map(fromCloudDeck));
     setStudyDays(library.studyDays);
     setFocusMinutes(Math.min(240, Math.max(1, library.focusMinutes)));
@@ -1164,7 +1173,7 @@ export default function LumeApp() {
 
   const moveStudy = useCallback((delta: -1 | 1) => {
     setStudy((current) => {
-      if (!current || current.complete || current.mode) return current;
+      if (!current || current.complete || !current.mode) return current;
       const nextIndex = Math.min(current.cardIds.length - 1, Math.max(0, current.index + delta));
       if (nextIndex === current.index) return current;
       return { ...current, index: nextIndex, flipped: false };
@@ -1581,7 +1590,7 @@ export default function LumeApp() {
       });
     }
     const idMap = new Map(Array.from(sourceIds).map((folderId) => [folderId, makeId("folder")]));
-    setFolders((current) => [...current, ...workspace.folders.filter((folder) => sourceIds.has(folder.id)).map((folder) => ({ id: idMap.get(folder.id) as string, parentId: folder.id === source.id ? null : folder.parentId ? idMap.get(folder.parentId) ?? null : null, title: folder.id === source.id ? `${folder.title} — copia` : folder.title, color: folder.color, visibility: "private" as Visibility, createdAt: Date.now() }))]);
+    setFolders((current) => [...current, ...workspace.folders.filter((folder) => sourceIds.has(folder.id)).map((folder) => ({ id: idMap.get(folder.id) as string, parentId: folder.id === source.id ? null : folder.parentId ? idMap.get(folder.parentId) ?? null : null, title: folder.id === source.id ? `${folder.title} — copia` : folder.title, color: folder.color, icon: normalizeLumeIcon(folder.icon, "folder"), visibility: "private" as Visibility, createdAt: Date.now() }))]);
     setDecks((current) => [...current, ...workspace.decks.filter((deck) => deck.folderId && sourceIds.has(deck.folderId)).map((deck) => { const local = fromCloudDeck(deck); return { ...local, id: makeId("deck"), folderId: idMap.get(deck.folderId as string) ?? null, visibility: "private" as Visibility, createdAt: Date.now(), lastStudied: undefined, cards: local.cards.map((card) => ({ ...card, id: makeId("card"), known: 0, missed: 0 })) }; })]);
   };
 
@@ -1658,6 +1667,7 @@ export default function LumeApp() {
         onFlip={() => setStudy((current) => (current ? { ...current, flipped: !current.flipped } : current))}
         onKnow={() => answerStudy(true)}
         onMiss={() => answerStudy(false)}
+        onMove={moveStudy}
         onPin={toggleStudyPin}
         onPinComment={updateStudyPinComment}
         onOpenSettings={() => setStudySettingsOpen(true)}
@@ -1688,7 +1698,6 @@ export default function LumeApp() {
       <Sidebar
         theme={theme}
         view={view}
-        classes={classes}
         folders={folders}
         decks={decks}
         expanded={expanded}
@@ -1701,7 +1710,6 @@ export default function LumeApp() {
           })
         }
         onNavigate={setView}
-        onOpenClass={(id) => openClass(id)}
         onCreate={() => setCreateMenu((open) => !open)}
         onTheme={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
         onPreferences={() => setPreferencesOpen(true)}
@@ -2023,13 +2031,11 @@ export default function LumeApp() {
 function Sidebar({
   theme,
   view,
-  classes,
   folders,
   decks,
   expanded,
   onToggle,
   onNavigate,
-  onOpenClass,
   onCreate,
   onTheme,
   onPreferences,
@@ -2040,13 +2046,11 @@ function Sidebar({
 }: {
   theme: "light" | "dark";
   view: View;
-  classes: LumeClass[];
   folders: Folder[];
   decks: Deck[];
   expanded: Set<string>;
   onToggle: (id: string) => void;
   onNavigate: (view: View) => void;
-  onOpenClass: (id: string) => void;
   onCreate: () => void;
   onTheme: () => void;
   onPreferences: () => void;
@@ -2090,8 +2094,8 @@ function Sidebar({
           <div className="tree-group" key={folder.id}>
             <div className={`${view.name === "folder" && view.id === folder.id ? "tree-row active" : "tree-row"}${dropTarget === folder.id ? " drop-target" : ""}`} style={{ "--depth": depth } as React.CSSProperties} onDragOver={(event) => { event.preventDefault(); setDropTarget(folder.id); }} onDragLeave={() => setDropTarget(undefined)} onDrop={(event) => dropInto(event, folder.id)}>
               <button className={open ? "tree-chevron open" : "tree-chevron"} type="button" disabled={!children} onClick={() => onToggle(folder.id)} aria-label={open ? "Chiudi cartella" : "Apri cartella"}>{children ? "›" : ""}</button>
-              <button className="tree-folder" title={folder.title} type="button" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-lume-folder", folder.id); }} onClick={() => { if (children && !open) onToggle(folder.id); onNavigate({ name: "folder", id: folder.id }); }}>
-                <i style={{ "--folder": folder.color } as React.CSSProperties} />
+              <button className="tree-folder" title={folder.title} style={{ "--folder": folder.color } as React.CSSProperties} type="button" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-lume-folder", folder.id); }} onClick={() => { if (children) onToggle(folder.id); onNavigate({ name: "folder", id: folder.id }); }}>
+                <TablerIcon name={normalizeLumeIcon(folder.icon, "folder")} />
                 <span>{folder.title}</span>
               </button>
             </div>
@@ -2099,7 +2103,7 @@ function Sidebar({
                 {renderTree(folder.id, depth + 1)}
                 {decks.filter((deck) => deck.folderId === folder.id).map((deck) => (
                   <button className={view.name === "deck" && view.id === deck.id ? "tree-deck active" : "tree-deck"} title={deck.title || "Set senza nome"} style={{ "--depth": depth + 1, "--deck": deck.color } as React.CSSProperties} key={deck.id} type="button" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-lume-deck", deck.id); }} onClick={() => onNavigate({ name: "deck", id: deck.id })}>
-                    <i /> <span>{deck.title || "Set senza nome"}</span>
+                    <TablerIcon name={normalizeLumeIcon(deck.icon, "book-2")} /> <span>{deck.title || "Set senza nome"}</span>
                   </button>
                 ))}
             </div>
@@ -2111,11 +2115,10 @@ function Sidebar({
     <aside className="sidebar-new">
       <button className="wordmark" type="button" onClick={() => onNavigate({ name: "home" })}>Lume</button>
       <nav className="primary-nav" aria-label="Navigazione principale">
-        <button className={view.name === "home" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "home" })}><i className="icon-home" />Il mio spazio</button>
-        <button className={view.name === "explore" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "explore" })}><i className="icon-search" />Esplora</button>
-        <button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "classes" })}><i className="icon-classes" />Classi</button>
+        <button className={view.name === "home" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "home" })}><TablerIcon name="home-2" />Il mio spazio</button>
+        <button className={view.name === "explore" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "explore" })}><TablerIcon name="compass" />Esplora</button>
+        <button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "classes" })}><TablerIcon name="users-group" />Classi</button>
       </nav>
-      {classes.length > 0 && <div className="sidebar-classes">{classes.slice(0, 5).map((item) => <button className={view.name === "class" && view.id === item.id ? "active" : ""} type="button" key={item.id} onClick={() => onOpenClass(item.id)}><i /><span>{item.title}</span></button>)}</div>}
       <div className={dropTarget === null ? "sidebar-folders-heading drop-target" : "sidebar-folders-heading"} onDragOver={(event) => { event.preventDefault(); setDropTarget(null); }} onDragLeave={() => setDropTarget(undefined)} onDrop={(event) => dropInto(event, null)}>
         <span>Le mie cartelle</span>
         <button type="button" onClick={onCreate} aria-label="Crea cartella o set">＋</button>
@@ -2125,13 +2128,13 @@ function Sidebar({
         <div className="independent-tree">
           <span>Set indipendenti</span>
           {decks.filter((deck) => !deck.folderId).map((deck) => (
-            <button type="button" title={deck.title || "Set senza nome"} key={deck.id} draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-lume-deck", deck.id); }} onClick={() => onNavigate({ name: "deck", id: deck.id })}><i style={{ background: deck.color }} />{deck.title || "Set senza nome"}</button>
+            <button type="button" title={deck.title || "Set senza nome"} style={{ "--deck": deck.color } as React.CSSProperties} key={deck.id} draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-lume-deck", deck.id); }} onClick={() => onNavigate({ name: "deck", id: deck.id })}><TablerIcon name={normalizeLumeIcon(deck.icon, "book-2")} />{deck.title || "Set senza nome"}</button>
           ))}
         </div>
       )}
       <div className="sidebar-bottom">
-        <button type="button" onClick={onTheme} aria-label={theme === "dark" ? "Passa alla modalità chiara" : "Passa alla modalità scura"}><i className={theme === "dark" ? "theme-night" : "theme-day"} /></button>
-        <button type="button" onClick={onPreferences} aria-label="Preferenze"><i className="icon-profile" /></button>
+        <button type="button" onClick={onTheme} aria-label={theme === "dark" ? "Passa alla modalità chiara" : "Passa alla modalità scura"}><TablerIcon name={theme === "dark" ? "sun" : "moon"} /></button>
+        <button type="button" onClick={onPreferences} aria-label="Preferenze e account"><TablerIcon name="user-circle" /></button>
       </div>
       <button className={resizing ? "sidebar-resizer active" : "sidebar-resizer"} type="button" onPointerDown={(event) => { event.preventDefault(); setResizing(true); }} aria-label="Ridimensiona la colonna laterale"><i /></button>
     </aside>
@@ -2143,10 +2146,10 @@ function Topbar({ onHome, onFocus, onBreathe, notificationCount, onNotifications
     <header className="topbar-new">
       <button className="mobile-wordmark" type="button" onClick={onHome}>Lume</button>
       <div className="top-tools">
-        <button className="notification-tool" type="button" onClick={onNotifications} aria-label={`${notificationCount} notifiche non lette`}><i className="icon-bell" />{notificationCount > 0 && <b>{notificationCount > 9 ? "9+" : notificationCount}</b>}<span>Notifiche</span></button>
+        <button className="notification-tool" type="button" onClick={onNotifications} aria-label={`${notificationCount} notifiche non lette`}><TablerIcon name="bell" />{notificationCount > 0 && <b>{notificationCount > 9 ? "9+" : notificationCount}</b>}<span>Notifiche</span></button>
         <button type="button" onClick={onFocus} aria-label="Timer Lume"><i className="mini-candle" /><span>Timer Lume</span></button>
         <button type="button" onClick={onBreathe} aria-label="Respira"><i className="breath-dot" /><span>Respira</span></button>
-        <button className="mobile-preferences-tool" type="button" onClick={onPreferences} aria-label="Preferenze"><i className="icon-profile" /><span>Preferenze</span></button>
+        <button className="mobile-preferences-tool" type="button" onClick={onPreferences} aria-label="Preferenze e account"><TablerIcon name="user-circle" /><span>Preferenze</span></button>
       </div>
     </header>
   );
@@ -2201,7 +2204,7 @@ function Home({
           <div className="panel-heading"><span>Riprendi da qui</span><button type="button" onClick={() => resumeDeck && onOpenDeck(resumeDeck.id)}>›</button></div>
           {resumeDeck ? (
             <button className="resume-content" type="button" onClick={onResume}>
-              <span className={`resume-notebook pattern-${resumeDeck.pattern}`} style={{ "--resume-deck": resumeDeck.color, "--resume-deck-text": getContrast(resumeDeck.color) } as React.CSSProperties}><span className="resume-spine" /><b>{resumeDeck.title}</b></span>
+              <span className={`resume-notebook pattern-${resumeDeck.pattern}`} style={{ "--resume-deck": resumeDeck.color, "--resume-deck-text": getContrast(resumeDeck.color) } as React.CSSProperties}><span className="resume-spine" /><TablerIcon name={normalizeLumeIcon(resumeDeck.icon, "book-2")} /><b>{resumeDeck.title}</b></span>
               <span><strong>{resumeDeck.title}</strong><i className="thin-progress"><b style={{ width: `${Math.min(100, Math.round((resumeDeck.cards.reduce((sum, card) => sum + card.known, 0) / Math.max(1, resumeDeck.cards.length * 4)) * 100))}%` }} /></i><small>{resumeDeck.cards.length} flashcard · {formatRelative(resumeDeck.lastStudied)}</small></span>
             </button>
           ) : <p className="empty-copy">Crea il tuo primo set per iniziare.</p>}
@@ -2261,7 +2264,7 @@ function FolderCard({ folder, count, onOpen, onDeckDrop }: { folder: Folder; cou
       } : undefined}
     >
       <span className="folder-tab" />
-      <span className="folder-body"><small>{folder.visibility === "public" ? "Pubblica" : "Privata"}</small><strong>{folder.title}</strong><em>{count} elementi</em></span>
+      <span className="folder-body"><TablerIcon name={normalizeLumeIcon(folder.icon, "folder")} /><small>{folder.visibility === "public" ? "Pubblica" : "Privata"}</small><strong>{folder.title}</strong><em>{count} elementi</em></span>
       {onDeckDrop && <span className="drop-copy">Rilascia qui</span>}
     </button>
   );
@@ -2284,8 +2287,8 @@ function Explore({ search, onSearch, decks, cloudStatus, onOpen }: { search: str
   const visible = decks.filter((deck) => `${deck.title} ${deck.description}`.toLowerCase().includes(search.toLowerCase()));
   return (
     <div className="explore-page">
-      <div className="page-intro"><span>Biblioteca pubblica</span><h1>Esplora flashcards</h1><p>Cerca tra i set pubblicati dalla comunità. Puoi aprirli, studiarli e lasciare una valutazione.</p></div>
-      <label className="search-box"><i className="icon-search" /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Cerca parole chiave, materie o titoli…" /></label>
+      <div className="page-intro"><h1>Esplora flashcards</h1><p>Cerca tra i set pubblicati dalla comunità. Puoi aprirli, studiarli e lasciare una valutazione.</p></div>
+      <label className="search-box"><TablerIcon name="search" /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Cerca parole chiave, materie o titoli…" /></label>
       <div className="notebook-grid public-grid">
         {visible.map((deck) => <Notebook key={deck.id} deck={deck} onOpen={() => onOpen(deck.id)} />)}
         {!visible.length && <p className="empty-copy">{cloudStatus === "checking" || cloudStatus === "loading" ? "Sto caricando la biblioteca pubblica…" : "Nessun set pubblico corrisponde alla ricerca."}</p>}
@@ -2295,7 +2298,7 @@ function Explore({ search, onSearch, decks, cloudStatus, onOpen }: { search: str
 }
 
 function ClassesPage({ account, username, classes, notice, busy, onLogin, onCreate, onJoin, onOpen }: { account: CloudAccount | null; username: string | null; classes: LumeClass[]; notice: string; busy: boolean; onLogin: () => void; onCreate: () => void; onJoin: () => void; onOpen: (id: string) => void }) {
-  return <div className="classes-page"><div className="page-intro"><span>Spazi condivisi</span><h1>Classi</h1><p>Raccogli materiali insieme alle persone con cui studi, senza mescolare i rispettivi spazi personali.</p></div>
+  return <div className="classes-page"><div className="page-intro"><h1>Classi</h1><p>Raccogli materiali insieme alle persone con cui studi, senza mescolare i rispettivi spazi personali.</p></div>
     {!account ? <section className="class-access-card"><div><span>Account necessario</span><h2>Accedi per entrare in una classe.</h2><p>Le classi e le notifiche restano collegate al tuo profilo.</p></div><button className="primary-dark" type="button" onClick={onLogin}>Accedi</button></section> : !username ? <section className="class-access-card"><div><span>Profilo da completare</span><h2>Scegli prima il tuo nome utente.</h2><p>È il nome pubblico che gli altri membri vedranno accanto ai tuoi materiali.</p></div></section> : <>
       <section className="class-actions-hero"><div><span>Il tuo profilo in classe</span><strong>@{username}</strong><small>L’email sarà visibile soltanto agli altri membri delle classi a cui partecipi.</small></div><div><button className="outline-button" type="button" onClick={onJoin}>Entra con un codice</button><button className="primary-dark" type="button" onClick={onCreate}>Crea una classe</button></div></section>
       {notice && <p className="class-notice">{notice}</p>}
@@ -2343,7 +2346,7 @@ function ClassItemPanel({ kind, item, accountId, classOwnerId, favorite, comment
   const [detailsOpen, setDetailsOpen] = useState(false);
   const visibleAnnotations = annotationFilter === "mine" ? annotations.filter((annotation) => annotation.authorId === accountId) : annotations;
   const canEdit = item.ownerId === accountId || classOwnerId === accountId;
-  return <article className="class-item-card" style={{ "--item-color": item.color } as React.CSSProperties}><button className="class-item-open" type="button" onClick={onOpen}><i className={kind === "folder" ? "class-folder-object" : `class-notebook-object pattern-${(item as ClassDeck).pattern}`} /><span>{kind === "folder" ? "Cartella" : `${(item as ClassDeck).cards.length} flashcard`}</span><strong>{item.title}</strong><small>di @{item.ownerName}</small></button><div className="class-item-actions"><button className={favorite ? "favorite active" : "favorite"} type="button" onClick={() => { void onFavorite(!favorite); }} aria-label={favorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}>☆</button>{canEdit && <button type="button" onClick={onEdit}>Modifica</button>}<button type="button" onClick={() => { void onCopy(); }}>{item.ownerId === accountId ? "Copia nel mio spazio" : "Richiedi una copia"}</button><button type="button" onClick={() => setDetailsOpen((open) => !open)}>{detailsOpen ? "Chiudi" : "Note e commenti"}</button></div>{detailsOpen && <div className="class-collaboration">{kind === "deck" && annotationFilter !== "hidden" && <section className="class-note-editor"><label><span>La tua nota condivisa</span><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Lascia un appunto utile alla classe…" /></label><label className="class-pin-toggle"><input type="checkbox" checked={pinned} onChange={(event) => setPinned(event.target.checked)} /><span>Metti un pin</span></label><button type="button" onClick={() => { void onAnnotation(note, pinned); }}>Salva nota</button>{visibleAnnotations.filter((annotation) => annotation.authorId !== accountId || annotation.note || annotation.pinned).length > 0 && <ul className="shared-note-list">{visibleAnnotations.map((annotation) => <li key={annotation.id}><strong>@{annotation.authorName}{annotation.pinned ? " · Pin" : ""}</strong>{annotation.note && <p>{annotation.note}</p>}</li>)}</ul>}</section>}<section className="class-comments"><span>Commenti</span><ul>{comments.map((entry) => <li key={entry.id}><strong>@{entry.authorName}</strong><p>{entry.text}</p></li>)}</ul><form onSubmit={(event) => { event.preventDefault(); if (!comment.trim()) return; void onComment(comment); setComment(""); }}><input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Scrivi un commento…" /><button type="submit" disabled={!comment.trim()}>Invia</button></form></section></div>}</article>;
+  return <article className="class-item-card" style={{ "--item-color": item.color } as React.CSSProperties}><button className="class-item-open" type="button" onClick={onOpen}><i className={kind === "folder" ? "class-folder-object" : `class-notebook-object pattern-${(item as ClassDeck).pattern}`}><TablerIcon name={normalizeLumeIcon(item.icon, kind === "folder" ? "folder" : "book-2")} /></i><span>{kind === "folder" ? "Cartella" : `${(item as ClassDeck).cards.length} flashcard`}</span><strong>{item.title}</strong><small>di @{item.ownerName}</small></button><div className="class-item-actions"><button className={favorite ? "favorite active" : "favorite"} type="button" onClick={() => { void onFavorite(!favorite); }} aria-label={favorite ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}>☆</button>{canEdit && <button type="button" onClick={onEdit}>Modifica</button>}<button type="button" onClick={() => { void onCopy(); }}>{item.ownerId === accountId ? "Copia nel mio spazio" : "Richiedi una copia"}</button><button type="button" onClick={() => setDetailsOpen((open) => !open)}>{detailsOpen ? "Chiudi" : "Note e commenti"}</button></div>{detailsOpen && <div className="class-collaboration">{kind === "deck" && annotationFilter !== "hidden" && <section className="class-note-editor"><label><span>La tua nota condivisa</span><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Lascia un appunto utile alla classe…" /></label><label className="class-pin-toggle"><input type="checkbox" checked={pinned} onChange={(event) => setPinned(event.target.checked)} /><span>Metti un pin</span></label><button type="button" onClick={() => { void onAnnotation(note, pinned); }}>Salva nota</button>{visibleAnnotations.filter((annotation) => annotation.authorId !== accountId || annotation.note || annotation.pinned).length > 0 && <ul className="shared-note-list">{visibleAnnotations.map((annotation) => <li key={annotation.id}><strong>@{annotation.authorName}{annotation.pinned ? " · Pin" : ""}</strong>{annotation.note && <p>{annotation.note}</p>}</li>)}</ul>}</section>}<section className="class-comments"><span>Commenti</span><ul>{comments.map((entry) => <li key={entry.id}><strong>@{entry.authorName}</strong><p>{entry.text}</p></li>)}</ul><form onSubmit={(event) => { event.preventDefault(); if (!comment.trim()) return; void onComment(comment); setComment(""); }}><input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Scrivi un commento…" /><button type="submit" disabled={!comment.trim()}>Invia</button></form></section></div>}</article>;
 }
 
 function ClassDialog({ mode, initialCode, busy, notice, onSubmit, onClose }: { mode: "create" | "join"; initialCode?: string; busy: boolean; notice: string; onSubmit: (value: string) => void; onClose: () => void }) {
@@ -2352,7 +2355,7 @@ function ClassDialog({ mode, initialCode, busy, notice, onSubmit, onClose }: { m
 }
 
 function ClassImportModal({ folders, decks, onImport, onClose }: { folders: Folder[]; decks: Deck[]; onImport: (kind: ClassItemKind, id: string) => void; onClose: () => void }) {
-  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="class-import-modal"><button className="round-close" type="button" onClick={onClose}>×</button><span>Dal tuo spazio personale</span><h2>Porta una copia nella classe.</h2><p>Il materiale condiviso sarà indipendente dall’originale: le modifiche in classe non toccheranno il tuo archivio.</p><div><h3>Cartelle</h3>{folders.filter((folder) => !folder.parentId).map((folder) => <button type="button" key={folder.id} onClick={() => onImport("folder", folder.id)}><i className="icon-folder-line" /><span>{folder.title}</span><em>Importa</em></button>)}</div><div><h3>Set</h3>{decks.map((deck) => <button type="button" key={deck.id} onClick={() => onImport("deck", deck.id)}><i className="create-deck-icon" /><span>{deck.title}</span><em>Importa</em></button>)}</div></section></div>;
+  return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="class-import-modal"><button className="round-close" type="button" onClick={onClose}>×</button><span>Dal tuo spazio personale</span><h2>Porta una copia nella classe.</h2><p>Il materiale condiviso sarà indipendente dall’originale: le modifiche in classe non toccheranno il tuo archivio.</p><div><h3>Cartelle</h3>{folders.filter((folder) => !folder.parentId).map((folder) => <button type="button" key={folder.id} onClick={() => onImport("folder", folder.id)}><TablerIcon name={normalizeLumeIcon(folder.icon, "folder")} /><span>{folder.title}</span><em>Importa</em></button>)}</div><div><h3>Set</h3>{decks.map((deck) => <button type="button" key={deck.id} onClick={() => onImport("deck", deck.id)}><TablerIcon name={normalizeLumeIcon(deck.icon, "book-2")} /><span>{deck.title}</span><em>Importa</em></button>)}</div></section></div>;
 }
 
 function FolderView({
@@ -2413,7 +2416,7 @@ function FolderView({
       <section className="folder-hero">
         <nav className="breadcrumbs" aria-label="Percorso cartella"><button type="button" onClick={onHome}>Il mio spazio</button>{ancestors.map((item) => <span className="breadcrumb-step" key={item.id}><i>›</i><button type="button" aria-current={item.id === folder.id ? "page" : undefined} onClick={() => onOpenFolder(item.id)}>{item.title}</button></span>)}</nav>
         <div className="folder-hero-content">
-          <span className="hero-folder-icon"><i /></span>
+          <span className="hero-folder-icon"><TablerIcon name={normalizeLumeIcon(folder.icon, "folder")} /></span>
           <div><small>{folder.visibility === "public" ? "Cartella pubblica" : "Cartella privata"}</small><h1>{folder.title}</h1><p>{childFolders.length} sottocartelle · {decks.length} set · {allCards} flashcard</p></div>
         </div>
         <div className="folder-actions"><button className="soft-button" type="button" onClick={onCreateDeck}>＋ Set</button><button className="soft-button" type="button" onClick={onCreateFolder}>＋ Sottocartella</button><button className="hero-button" type="button" onClick={onStudy}>Studia tutta la cartella</button><button className="delete-folder-link" type="button" onClick={onEdit}>Modifica cartella</button><button className="delete-folder-link" type="button" onClick={onDeleteFolder}>{folder.parentId ? "Elimina sottocartella" : "Elimina cartella"}</button></div>
@@ -2434,8 +2437,8 @@ function FolderView({
 
 function Notebook({ deck, onOpen, onDragStartDeck, selected = false, selectionMode = false }: { deck: Deck; onOpen: () => void; onDragStartDeck?: (event: React.DragEvent<HTMLButtonElement>) => void; selected?: boolean; selectionMode?: boolean }) {
   return (
-    <button className={`${onDragStartDeck ? "notebook draggable" : "notebook"} pattern-${deck.pattern}${selected ? " selected" : ""}${deck.emoji ? " has-emoji" : ""}${deck.community ? " community" : ""}`} style={{ "--deck": deck.color, "--deck-text": getContrast(deck.color) } as React.CSSProperties} type="button" onClick={onOpen} draggable={Boolean(onDragStartDeck)} onDragStart={onDragStartDeck} aria-pressed={selectionMode ? selected : undefined}>
-      {selectionMode && <span className="notebook-check">{selected ? "✓" : ""}</span>}<span className="notebook-spine" />{deck.emoji && <span className="notebook-emoji" aria-hidden="true">{deck.emoji}</span>}{deck.community && <small>{`Di ${deck.ownerName || "Studente Lume"}`}</small>}<strong>{deck.title || "Set senza nome"}</strong><i>{deck.description || "Domande e risposte"}</i><em>{String(deck.cards.length).padStart(2, "0")} flashcard{deck.community ? ` · ${deck.votes ?? 0} punti` : ""}</em>
+    <button className={`${onDragStartDeck ? "notebook draggable" : "notebook"} pattern-${deck.pattern}${selected ? " selected" : ""}${deck.community ? " community" : ""}`} style={{ "--deck": deck.color, "--deck-text": getContrast(deck.color) } as React.CSSProperties} type="button" onClick={onOpen} draggable={Boolean(onDragStartDeck)} onDragStart={onDragStartDeck} aria-pressed={selectionMode ? selected : undefined}>
+      {selectionMode && <span className="notebook-check">{selected ? "✓" : ""}</span>}<span className="notebook-spine" /><TablerIcon className="notebook-cover-icon" name={normalizeLumeIcon(deck.icon, "book-2")} />{deck.community && <small>{`Di ${deck.ownerName || "Studente Lume"}`}</small>}<strong>{deck.title || "Set senza nome"}</strong><i>{deck.description || "Domande e risposte"}</i><em>{String(deck.cards.length).padStart(2, "0")} flashcard{deck.community ? ` · ${deck.votes ?? 0} punti` : ""}</em>
     </button>
   );
 }
@@ -2449,7 +2452,7 @@ function DeckView({ deck, folder, publicEffective, readOnly, voteBusy, onBack, o
       <button className="back-link" type="button" onClick={onBack}>← {readOnly ? "Esplora" : folder?.title ?? "Il mio spazio"}</button>
       <section className="deck-overview">
         <Notebook deck={{ ...deck, color: folder?.color ?? deck.color }} onOpen={() => undefined} />
-        <div><span>{publicEffective ? readOnly ? `Set pubblico · ${deck.ownerName || "Comunità Lume"}` : "Set pubblico" : "Set privato"}</span><h1>{deck.title || "Set senza nome"}</h1><p>{deck.description || "Domande e risposte"}</p><dl><div><dt>Flashcards</dt><dd>{deck.cards.length}</dd></div><div><dt>Ordine</dt><dd>{deck.order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{deck.direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Modalità</dt><dd>{deck.keywordHelp ? "Keyword Help" : "Ripasso normale"}</dd></div></dl><div className="deck-actions"><button className="primary-dark" type="button" onClick={onStudy}>Studia il set</button>{!readOnly && <button className="outline-button" type="button" onClick={onEdit}>Modifica</button>}</div>{publicEffective && <div className="public-vote"><span>Valuta questo set pubblico</span><button disabled={voteBusy} className={deck.userVote === -1 ? "active" : ""} type="button" onClick={() => onVote(-1)} aria-label="Non mi piace"><i className="thumb-icon thumb-down" /></button><button disabled={voteBusy} className={deck.userVote === 1 ? "active" : ""} type="button" onClick={() => onVote(1)} aria-label="Mi piace"><i className="thumb-icon" /></button><button disabled={voteBusy} className={deck.userVote === 2 ? "active" : ""} type="button" onClick={() => onVote(2)} aria-label="Mi piace molto"><span className="double-thumb"><i className="thumb-icon" /><i className="thumb-icon" /></span></button><strong>{deck.votes ?? 0}</strong>{typeof deck.ratingsCount === "number" && <small>{deck.ratingsCount} valutazioni</small>}</div>} {!readOnly && <div className="deck-secondary-actions"><button type="button" disabled={!pinnedCards.length} onClick={() => setPinnedOnly((active) => !active)}>{pinnedOnly ? "Mostra tutte" : `Pin da rivedere (${pinnedCards.length})`}</button><button className="danger-link" type="button" onClick={onDelete}>Elimina set</button></div>}</div>
+        <div><span>{publicEffective ? readOnly ? `Set pubblico · ${deck.ownerName || "Comunità Lume"}` : "Set pubblico" : "Set privato"}</span><h1>{deck.title || "Set senza nome"}</h1><p>{deck.description || "Domande e risposte"}</p><dl><div><dt>Flashcards</dt><dd>{deck.cards.length}</dd></div><div><dt>Ordine</dt><dd>{deck.order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{deck.direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Modalità</dt><dd>{deck.keywordHelp ? "Keyword Help" : "Ripasso normale"}</dd></div></dl><div className="deck-actions"><button className="primary-dark" type="button" onClick={onStudy}>Studia il set</button>{!readOnly && <button className="outline-button" type="button" onClick={onEdit}>Modifica</button>}</div>{publicEffective && <div className="public-vote"><span>Valuta questo set pubblico</span><button disabled={voteBusy} className={deck.userVote === -1 ? "active" : ""} type="button" onClick={() => onVote(-1)} aria-label="Non mi piace"><TablerIcon name="thumb-down" /></button><button disabled={voteBusy} className={deck.userVote === 1 ? "active" : ""} type="button" onClick={() => onVote(1)} aria-label="Mi piace"><TablerIcon name="thumb-up" /></button><button disabled={voteBusy} className={deck.userVote === 2 ? "active" : ""} type="button" onClick={() => onVote(2)} aria-label="Mi piace molto"><span className="double-thumb"><TablerIcon name="thumb-up" /><TablerIcon name="thumb-up" /></span></button><strong>{deck.votes ?? 0}</strong>{typeof deck.ratingsCount === "number" && <small>{deck.ratingsCount} valutazioni</small>}</div>} {!readOnly && <div className="deck-secondary-actions"><button type="button" disabled={!pinnedCards.length} onClick={() => setPinnedOnly((active) => !active)}>{pinnedOnly ? "Mostra tutte" : `Pin da rivedere (${pinnedCards.length})`}</button><button className="danger-link" type="button" onClick={onDelete}>Elimina set</button></div>}</div>
       </section>
       <section className="card-list"><div className="section-title"><h2>{pinnedOnly ? "Pin da rivedere" : "Le flashcards"}</h2><span>Domanda davanti · risposta dietro</span></div>{visibleCards.map((card, index) => <article key={card.id}><b>{String(index + 1).padStart(2, "0")}</b><RichText value={card.front} /><RichText value={card.back} />{card.pinned && <span className="card-list-pin">Pin · da correggere</span>}{card.pinned && card.pinComment && <p className="pin-comment">{card.pinComment}</p>}</article>)}{pinnedOnly && !visibleCards.length && <p className="empty-copy">Non hai ancora messo pin in questo set.</p>}</section>
     </div>
@@ -2459,7 +2462,7 @@ function DeckView({ deck, folder, publicEffective, readOnly, voteBusy, onBack, o
 function CreateMenu({ onFolder, onDeck, onClose }: { onFolder: () => void; onDeck: () => void; onClose: () => void }) {
   return (
     <div className="popover-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="create-popover"><span>Cosa vuoi creare?</span><button type="button" onClick={onFolder}><i className="create-folder-icon" /><strong>Una cartella</strong><small>Può contenere altre cartelle e set</small></button><button type="button" onClick={onDeck}><i className="create-deck-icon" /><strong>Un set di flashcards</strong><small>Può vivere da solo o dentro una cartella</small></button></section>
+      <section className="create-popover"><span>Cosa vuoi creare?</span><button type="button" onClick={onFolder}><TablerIcon name="folder" /><strong>Una cartella</strong><small>Può contenere altre cartelle e set</small></button><button type="button" onClick={onDeck}><TablerIcon name="book-2" /><strong>Un set di flashcards</strong><small>Può vivere da solo o dentro una cartella</small></button></section>
     </div>
   );
 }
@@ -2468,6 +2471,8 @@ function FolderCreator({ folder, folders, defaultParentId, parentPublic, onSave,
   const [title, setTitle] = useState(folder?.title ?? "");
   const [parentId, setParentId] = useState<string | null>(folder?.parentId ?? defaultParentId);
   const [color, setColor] = useState(folder?.color ?? colors[0]);
+  const [icon, setIcon] = useState(normalizeLumeIcon(folder?.icon, "folder"));
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [visibility, setVisibility] = useState<Visibility>(folder?.visibility ?? "private");
   const inheritedPublic = parentPublic(parentId);
   const blockedParents = useMemo(() => {
@@ -2494,12 +2499,14 @@ function FolderCreator({ folder, folders, defaultParentId, parentPublic, onSave,
         <section className="creator-fields"><span className="step-number">01</span><h1>Dai forma al tuo archivio.</h1><p>Una cartella può contenere set e altre cartelle, senza limiti di profondità.</p>
           <label className="field-clean"><span>Nome della cartella</span><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Es. Psicologia" maxLength={60} /></label>
           <label className="field-clean"><span>Dentro a</span><select value={parentId ?? ""} onChange={(event) => setParentId(event.target.value || null)}><option value="">Il mio spazio — livello principale</option>{possibleParents.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+          <IconChoiceButton icon={icon} color={color} onClick={() => setIconPickerOpen(true)} />
           <fieldset className="clean-fieldset"><legend>Colore</legend><div className="color-palette">{colors.map((option) => <button className={color === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => setColor(option)} aria-label={`Colore ${option}`} />)}<label className="custom-color"><input type="color" value={color} onChange={(event) => setColor(event.target.value)} /><span>＋</span></label></div></fieldset>
           <fieldset className="clean-fieldset"><legend>Visibilità</legend>{inheritedPublic ? <div className="inherit-note"><strong>Pubblica tramite la cartella superiore</strong><small>Una cartella inserita in uno spazio pubblico non può contenere elementi privati.</small></div> : <div className="segmented"><button className={visibility === "private" ? "selected" : ""} type="button" onClick={() => setVisibility("private")}>Privata</button><button className={visibility === "public" ? "selected" : ""} type="button" onClick={() => setVisibility("public")}>Pubblica</button></div>}<p className="privacy-explanation">{inheritedPublic || visibility === "public" ? "Tutti i set e tutte le sottocartelle al suo interno saranno pubblici." : "I contenuti resteranno privati. Potrai rendere pubblici singoli set uno per uno."}</p></fieldset>
         </section>
-        <aside className="folder-live-preview"><span>Anteprima</span><div className="large-folder-object" style={{ "--folder": color, "--folder-text": getContrast(color) } as React.CSSProperties}><i className="preview-paper one" /><i className="preview-paper two" /><span className="preview-folder-tab" /><div><small>{inheritedPublic || visibility === "public" ? "Cartella pubblica" : "Cartella privata"}</small><strong>{title || "La tua cartella"}</strong><em>{parentId ? `Dentro ${folders.find((item) => item.id === parentId)?.title}` : "Livello principale"}</em></div></div></aside>
+        <aside className="folder-live-preview"><span>Anteprima</span><div className="large-folder-object" style={{ "--folder": color, "--folder-text": getContrast(color) } as React.CSSProperties}><i className="preview-paper one" /><i className="preview-paper two" /><span className="preview-folder-tab" /><div><TablerIcon className="folder-preview-icon" name={icon} /><small>{inheritedPublic || visibility === "public" ? "Cartella pubblica" : "Cartella privata"}</small><strong>{title || "La tua cartella"}</strong><em>{parentId ? `Dentro ${folders.find((item) => item.id === parentId)?.title}` : "Livello principale"}</em></div></div></aside>
       </main>
-      <footer className="creator-footer"><button type="button" onClick={onClose}>Annulla</button><button className="primary-dark" type="button" disabled={!title.trim()} onClick={() => onSave({ title: title.trim(), parentId, color, visibility: inheritedPublic ? "public" : visibility }, folder?.id)}>{folder ? "Salva modifiche" : "Crea la cartella"} →</button></footer>
+      <footer className="creator-footer"><button type="button" onClick={onClose}>Annulla</button><button className="primary-dark" type="button" disabled={!title.trim()} onClick={() => onSave({ title: title.trim(), parentId, color, icon, visibility: inheritedPublic ? "public" : visibility }, folder?.id)}>{folder ? "Salva modifiche" : "Crea la cartella"} →</button></footer>
+      {iconPickerOpen && <IconPicker selected={icon} color={color} kind="folder" onSelect={setIcon} onClose={() => setIconPickerOpen(false)} />}
     </div>
   );
 }
@@ -2521,7 +2528,8 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
   const [folderId, setFolderId] = useState<string | null>(deck?.folderId ?? defaultFolderId);
   const [color, setColor] = useState(deck?.color ?? colors[0]);
   const pattern: Pattern = "plain";
-  const [emoji, setEmoji] = useState(deck?.emoji ?? "");
+  const [icon, setIcon] = useState(normalizeLumeIcon(deck?.icon, "book-2"));
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [visibility, setVisibility] = useState<Visibility>(deck?.visibility ?? "private");
   const [keywordHelp, setKeywordHelp] = useState(deck?.keywordHelp ?? false);
   const [keywordInfoOpen, setKeywordInfoOpen] = useState(false);
@@ -2601,7 +2609,7 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
   };
   const submit = () => {
     const oldCards = new Map(deck?.cards.map((card) => [card.id, card]) ?? []);
-    onSave({ title: title.trim(), description: description.trim(), folderId, color: effectiveColor, pattern, emoji: emoji.trim(), visibility: inheritedPublic ? "public" : visibility, keywordHelp, order, direction, cardColorMode, cardColor, lastStudied: deck?.lastStudied, cards: completePairs.map((item) => { const previous = item.id ? oldCards.get(item.id) : undefined; return { id: item.id ?? makeId("card"), front: normalizeRichText(item.front), back: normalizeRichText(item.back), known: previous?.known ?? 0, missed: previous?.missed ?? 0, pinned: item.pinned ?? previous?.pinned, pinComment: item.pinComment ?? previous?.pinComment ?? "" }; }) }, deck?.id);
+    onSave({ title: title.trim(), description: description.trim(), folderId, color: effectiveColor, pattern, icon, visibility: inheritedPublic ? "public" : visibility, keywordHelp, order, direction, cardColorMode, cardColor, lastStudied: deck?.lastStudied, cards: completePairs.map((item) => { const previous = item.id ? oldCards.get(item.id) : undefined; return { id: item.id ?? makeId("card"), front: normalizeRichText(item.front), back: normalizeRichText(item.back), known: previous?.known ?? 0, missed: previous?.missed ?? 0, pinned: item.pinned ?? previous?.pinned, pinComment: item.pinComment ?? previous?.pinComment ?? "" }; }) }, deck?.id);
   };
 
   return <div className="creator-layer deck-creator" style={{ "--creator-accent": effectiveColor, "--creator-accent-text": getContrast(effectiveColor) } as React.CSSProperties}><header className="deck-creator-bar"><div className="deck-creator-brand"><strong>Lume</strong><button type="button" onClick={() => setAbandonOpen(true)}>← Esci</button></div><nav className="creator-stepper" aria-label={`Passaggio ${step} di 3`}>{([1, 2, 3] as const).map((number) => <button className={step === number ? "active" : step > number ? "complete" : ""} type="button" key={number} onClick={() => goToStep(number)}><b>{number}</b><span>{number === 1 ? "Dettagli" : number === 2 ? "Flashcards" : "Riepilogo"}</span></button>)}</nav><button className="creator-save-button" type="button" onClick={submit}>{deck ? "Salva modifiche" : "Salva il set"}</button></header><main className="deck-creator-stage">
@@ -2613,17 +2621,17 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
         <label className="field-clean"><span>Descrizione</span><input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Es. Movimenti, oggetti e progettisti" /></label>
         <label className="field-clean"><span>Cartella facoltativa</span><select value={folderId ?? ""} onChange={(event) => setFolderId(event.target.value || null)}><option value="">Nessuna cartella — set indipendente</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.title}</option>)}</select></label>
         {!selectedFolder && <fieldset className="clean-fieldset"><legend>Colore del set indipendente</legend><div className="color-palette">{colors.map((option) => <button className={color === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => { setColor(option); setCardColor(option); }} aria-label={`Colore ${option}`} />)}<label className="custom-color"><input type="color" value={color} onChange={(event) => { setColor(event.target.value); setCardColor(event.target.value); }} /><span>＋</span></label></div></fieldset>}
-        <label className="field-clean emoji-field"><span>Emoji del set (facoltativa)</span><span className="emoji-input-wrap"><input value={emoji} onChange={(event) => setEmoji(event.target.value)} placeholder="Aggiungi un’emoji" maxLength={16} aria-describedby="emoji-help" />{emoji && <button type="button" onClick={() => setEmoji("")} aria-label="Rimuovi emoji">×</button>}</span><small id="emoji-help">Puoi usare qualsiasi emoji disponibile sulla tastiera del tuo dispositivo.</small></label>
+        <IconChoiceButton icon={icon} color={effectiveColor} onClick={() => setIconPickerOpen(true)} />
         <fieldset className="clean-fieldset"><legend>Visibilità</legend>{inheritedPublic ? <div className="inherit-note"><strong>Pubblico tramite la cartella</strong><small>Tutto ciò che entra in questa cartella è pubblico.</small></div> : <div className="segmented"><button className={visibility === "private" ? "selected" : ""} type="button" onClick={() => setVisibility("private")}>Privato</button><button className={visibility === "public" ? "selected" : ""} type="button" onClick={() => setVisibility("public")}>Pubblico</button></div>}</fieldset>
       </section>
-      <aside className="notebook-preview-column"><span>Anteprima copertina</span><Notebook deck={{ id: "preview", folderId, title: title || "Il tuo set", description: description || "Domande e risposte", color: effectiveColor, pattern, emoji, visibility, keywordHelp, order, direction, cardColorMode, cardColor, cards: completePairs.map((item, index) => ({ id: String(index), front: item.front, back: item.back, known: 0, missed: 0 })), createdAt: 0 }} onOpen={() => undefined} /></aside>
+      <aside className="notebook-preview-column"><span>Anteprima copertina</span><Notebook deck={{ id: "preview", folderId, title: title || "Il tuo set", description: description || "Domande e risposte", color: effectiveColor, pattern, icon, visibility, keywordHelp, order, direction, cardColorMode, cardColor, cards: completePairs.map((item, index) => ({ id: String(index), front: item.front, back: item.back, known: 0, missed: 0 })), createdAt: 0 }} onOpen={() => undefined} /></aside>
     </div>}
     {step === 2 && <div className="card-writing-layout vertical-editor" onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragImportActive(true); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragImportActive(false); }} onDrop={(event) => { event.preventDefault(); setDragImportActive(false); void importMarkdown(event.dataTransfer.files?.[0]); }}><aside className="set-options-panel sticky-options"><div className="readonly-set-title"><span>Titolo del set</span><h2>{title}</h2></div><fieldset className="clean-fieldset"><legend>Ordine predefinito</legend><div className="segmented"><button className={order === "sequential" ? "selected" : ""} type="button" onClick={() => setOrder("sequential")}>In ordine</button><button className={order === "random" ? "selected" : ""} type="button" onClick={() => setOrder("random")}>Casuale</button></div></fieldset><fieldset className="clean-fieldset"><legend>Verso predefinito</legend><div className="segmented"><button className={direction === "front-first" ? "selected" : ""} type="button" onClick={() => setDirection("front-first")}>Fronte prima</button><button className={direction === "back-first" ? "selected" : ""} type="button" onClick={() => setDirection("back-first")}>Retro prima</button></div></fieldset><div className="keyword-option"><label className="toggle-row"><input type="checkbox" checked={keywordHelp} onChange={(event) => setKeywordHelp(event.target.checked)} /><i /><span><b>Keyword Help</b><small>Usa il neretto come indizio.</small></span></label><button className="help-dot" type="button" onClick={() => setKeywordInfoOpen((open) => !open)} aria-label="Come funziona Keyword Help">?</button></div>{keywordInfoOpen && <p className="keyword-info">Durante lo studio, tieni premuta la barra spaziatrice: il testo si sfoca e restano leggibili soltanto le parole messe in neretto.</p>}<button className="llm-set-button" type="button" onClick={() => setPromptOpen(true)}><span>Prepara il set con un LLM</span><small>Visualizza e copia il prompt adatto.</small></button><button className="sidebar-import-button" type="button" onClick={() => fileRef.current?.click()}>↑ Importa o trascina file .md</button><input ref={fileRef} className="sr-only" type="file" accept=".md" onChange={(event) => { void importMarkdown(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importMessage && <p className="import-status">{importMessage}</p>}<button className="delete-all-cards" type="button" onClick={() => setDeleteAllOpen(true)}>Elimina tutte le flashcards</button></aside><section className="card-editor-workspace vertical-card-workspace"><div className="editor-toolbar-title"><div><span>Flashcards</span><strong>{completePairs.length} pronte</strong></div></div><div className="card-pair-list">{pairs.map((pair, index) => <article className={(pair.id ?? `draft-${index}`) === deletingPairKey ? "card-pair-editor removing" : "card-pair-editor"} key={pair.id ?? `draft-${index}`}><header><span>Flashcard {String(index + 1).padStart(2, "0")}</span><button type="button" onClick={() => deletePair(index)} aria-label={`Elimina flashcard ${index + 1}`}>×</button></header><RichEditor id={`front-${index}`} label="Fronte" value={pair.front} placeholder="Scrivi la domanda o il concetto principale…" autoFocus={index === 0} onChange={(value) => updatePair(index, "front", value)} onTab={() => document.getElementById(`back-${index}`)?.focus()} /><RichEditor id={`back-${index}`} label="Retro" value={pair.back} placeholder="Scrivi la risposta o la spiegazione…" onChange={(value) => updatePair(index, "back", value)} onTab={() => document.getElementById("add-pair")?.focus()} /></article>)}</div><button id="add-pair" className="add-pair" type="button" onClick={addPair}>＋ Aggiungi un’altra coppia</button></section>{dragImportActive && <div className="md-drop-overlay"><div><strong>Rilascia qui il file .md</strong><span>Le flashcards verranno importate automaticamente.</span></div></div>}</div>}
     {step === 3 && <div className="summary-layout refined-summary">
       <aside className="summary-data"><span>Riepilogo</span><h2>{title || "Set senza nome"}</h2><dl><div><dt>Flashcards</dt><dd>{completePairs.length}</dd></div><div><dt>Ordine</dt><dd>{order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Keyword Help</dt><dd>{keywordHelp ? "Attivo" : "Disattivo"}</dd></div></dl><fieldset className="clean-fieldset"><legend>Colore delle flashcards</legend><div className="segmented"><button className={cardColorMode === "single" ? "selected" : ""} type="button" onClick={() => setCardColorMode("single")}>Colore fisso</button><button className={cardColorMode === "random" ? "selected" : ""} type="button" onClick={() => setCardColorMode("random")}>Casuale a ogni studio</button></div>{cardColorMode === "single" && <div className="color-palette compact">{cardColors.map((option) => <button className={cardColor === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => setCardColor(option)} aria-label={`Colore flashcard ${option}`} />)}</div>}</fieldset></aside>
       <section className="study-simulation"><h1>Prova il tuo set.</h1>{previewPair ? <><div className="summary-card-wrap"><button key={previewIndex} className={previewBack ? "simulation-card flipped" : "simulation-card"} type="button" onClick={() => setPreviewBack((back) => !back)}><span className="simulation-card-inner"><span className="simulation-face simulation-front" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.46) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.86) }}><small>{direction === "front-first" ? "Fronte" : "Retro"}</small><RichText value={previewFirst} /><em>Clicca per girare</em></span><span className="simulation-face simulation-back" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.3) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.72) }}><small>{direction === "front-first" ? "Retro" : "Fronte"}</small><RichText value={previewSecond} /><em>Clicca per girare</em></span></span></button></div><div className="simulation-controls"><button type="button" disabled={previewIndex === 0} onClick={() => { setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); }}>←</button><span>{previewIndex + 1} di {completePairs.length}</span><button type="button" disabled={previewIndex >= completePairs.length - 1} onClick={() => { setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); }}>→</button></div></> : <div className="empty-summary-preview"><strong>Il set è ancora vuoto.</strong><p>Puoi salvarlo adesso e aggiungere le flashcards in un secondo momento.</p></div>}</section>
     </div>}
-  </main>{promptOpen && <LLMPromptModal keywordHelp={keywordHelp} onClose={() => setPromptOpen(false)} onCopied={setImportMessage} />}{deleteAllOpen && <DeleteCardsConfirmModal count={pairs.filter((pair) => plainText(pair.front) || plainText(pair.back)).length} onClose={() => setDeleteAllOpen(false)} onConfirm={() => { setPairs([{ front: "", back: "" }]); setDeleteAllOpen(false); }} />}{abandonOpen && <AbandonCreatorModal onClose={() => setAbandonOpen(false)} onConfirm={onClose} />}</div>;
+  </main>{iconPickerOpen && <IconPicker selected={icon} color={effectiveColor} kind="deck" onSelect={setIcon} onClose={() => setIconPickerOpen(false)} />}{promptOpen && <LLMPromptModal keywordHelp={keywordHelp} onClose={() => setPromptOpen(false)} onCopied={setImportMessage} />}{deleteAllOpen && <DeleteCardsConfirmModal count={pairs.filter((pair) => plainText(pair.front) || plainText(pair.back)).length} onClose={() => setDeleteAllOpen(false)} onConfirm={() => { setPairs([{ front: "", back: "" }]); setDeleteAllOpen(false); }} />}{abandonOpen && <AbandonCreatorModal onClose={() => setAbandonOpen(false)} onConfirm={onClose} />}</div>;
 }
 
 function AbandonCreatorModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: () => void }) {
@@ -2685,7 +2693,7 @@ function difficultStudyCardIds(state: StudyState) {
     .sort((a, b) => studyDifficultyScore(state, b) - studyDifficultyScore(state, a));
 }
 
-function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen, onFlip, onKnow, onMiss, onPin, onPinComment, onOpenSettings, onCloseSettings, onSettingsChange, onKeywords, onChooseMode, onRestartMissed, onRestartAll, onExit }: { theme: "light" | "dark"; state: StudyState; entry: { deck: Deck; card: Card } | null; library: Deck[]; showKeywords: boolean; settingsOpen: boolean; onFlip: () => void; onKnow: () => void; onMiss: () => void; onPin: () => void; onPinComment: (value: string) => void; onOpenSettings: () => void; onCloseSettings: () => void; onSettingsChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onKeywords: () => void; onChooseMode: (mode: StudyMode) => void; onRestartMissed: () => void; onRestartAll: () => void; onExit: () => void }) {
+function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen, onFlip, onKnow, onMiss, onMove, onPin, onPinComment, onOpenSettings, onCloseSettings, onSettingsChange, onKeywords, onChooseMode, onRestartMissed, onRestartAll, onExit }: { theme: "light" | "dark"; state: StudyState; entry: { deck: Deck; card: Card } | null; library: Deck[]; showKeywords: boolean; settingsOpen: boolean; onFlip: () => void; onKnow: () => void; onMiss: () => void; onMove: (delta: -1 | 1) => void; onPin: () => void; onPinComment: (value: string) => void; onOpenSettings: () => void; onCloseSettings: () => void; onSettingsChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onKeywords: () => void; onChooseMode: (mode: StudyMode) => void; onRestartMissed: () => void; onRestartAll: () => void; onExit: () => void }) {
   const firstDeck = library.find((deck) => state.deckIds.includes(deck.id));
   const baseColor = state.cardColor || firstDeck?.color || "#91aaa4";
   const difficultIds = difficultStudyCardIds(state);
@@ -2726,7 +2734,6 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
               <em>Verifica finale →</em>
             </button>
           </div>
-          <button className="study-mode-settings" type="button" onClick={onOpenSettings}>Ordine, verso e font</button>
         </main>
         {settingsOpen && <StudySettings state={state} onChange={onSettingsChange} onClose={onCloseSettings} />}
       </div>
@@ -2766,6 +2773,7 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
   const modeLabel = state.mode === "learn" ? "Impara" : "Test";
   return (
     <div className="study-screen" style={{ "--study": baseColor, "--study-soft": cardColor, "--study-back": secondColor, "--study-font": studyFontStack(state.font) } as React.CSSProperties}>
+      <nav className="study-floating-nav" aria-label="Navigazione tra flashcard"><button type="button" disabled={state.index === 0} onClick={() => onMove(-1)} aria-label="Flashcard precedente"><TablerIcon name="chevron-left" /></button><button type="button" disabled={state.index >= state.cardIds.length - 1} onClick={() => onMove(1)} aria-label="Flashcard successiva"><TablerIcon name="chevron-right" /></button></nav>
       <header><button className="study-exit" type="button" onClick={onExit}>× Esci</button><div><strong>{entry.deck.title || "Set senza nome"}</strong><span>{modeLabel} · {state.index + 1} / {state.cardIds.length}</span></div><div className="study-session-meta"><span>{state.streak} streak</span><span>{state.mode === "learn" ? `${state.learnedIds.length} imparate · ${difficultIds.length} difficili` : `${state.attempts} risposte · ${difficultIds.length} errori`}</span><button className={entry.card.pinned ? "pin-button pinned" : "pin-button"} type="button" onClick={onPin} aria-label={entry.card.pinned ? "Rimuovi pin dalla flashcard" : "Metti un pin alla flashcard"}><i /> <span>{entry.card.pinned ? "Con pin" : "Pin"}</span></button><button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><i><b /><b /><b /></i><span>Impostazioni</span></button></div></header>
       <main><p>{state.mode === "learn" ? "La ricordi ora?" : "Conoscevi la risposta?"}</p><button key={`${entry.card.id}-${state.index}`} className={state.flipped ? "study-card flipped" : "study-card"} type="button" onClick={onFlip}><span className="study-card-inner"><span className="study-face study-front" style={{ "--card-font-size": studyTextSize(firstValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Domanda" : "Risposta"}</small><RichText value={firstValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span><span className="study-face study-back" style={{ "--card-font-size": studyTextSize(secondValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Risposta" : "Domanda"}</small><RichText value={secondValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span></span>{showKeywords && keywords.length > 0 && <span className="keyword-overlay" style={{ "--keyword-font-size": studyTextSize(entry.card.back) } as React.CSSProperties}><small>Keywords</small><RichText value={entry.card.back} /><em>Rilascia la barra spaziatrice per nasconderle</em></span>}</button>{entry.card.pinned && <label className="study-pin-note"><span>Nota per la revisione</span><input value={entry.card.pinComment ?? ""} onChange={(event) => onPinComment(event.target.value)} placeholder="Es. controllare la definizione o correggere un errore…" /></label>}<div className="study-sequence-note"><span>{state.mode === "learn" ? "Le carte non ricordate tornano dopo 3 altre carte." : "Ogni carta conta una sola volta nel punteggio."}</span><strong>{state.mode === "learn" ? `${state.learnedIds.length}/${totalCards} imparate` : `${state.attempts}/${totalCards} risposte`}</strong></div><div className="study-actions"><button type="button" onClick={onKnow}><b>1</b><span><strong>La so</strong><small>{state.mode === "learn" ? "Questa carta è imparata" : "Segna come corretta"}</small></span></button><button type="button" onClick={onMiss}><b>2</b><span><strong>Non la so</strong><small>{state.mode === "learn" ? "Torna dopo 3 altre carte" : "Segna come errore"}</small></span></button></div>{keywords.length > 0 && <button className="keyword-button" type="button" onClick={onKeywords}>Tieni premuta la barra spaziatrice · Mostra keywords</button>}<p className="study-shortcuts">Spazio gira · 1 La so · 2 Non la so · 3 Pin</p></main>
       {settingsOpen && <StudySettings state={state} onChange={onSettingsChange} onClose={onCloseSettings} />}
@@ -2774,7 +2782,7 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
 }
 
 function StudySettings({ state, onChange, onClose }: { state: StudyState; onChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onClose: () => void }) {
-  return <div className="study-settings-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="study-settings-panel"><button className="round-close" type="button" onClick={onClose}>×</button><span>Impostazioni di studio</span><h2>Adatta le carte al tuo modo di leggere.</h2><label><span>Font delle flashcards</span><select value={state.font} onChange={(event) => onChange({ font: event.target.value as StudyFont })}><option value="current">Attuale</option><option value="comic">Comic Sans DM</option><option value="helvetica">Helvetica</option><option value="serif">Serif</option><option value="mono">Mono</option></select></label><fieldset><legend>Ordine delle carte</legend><div className="segmented"><button className={state.order === "sequential" ? "selected" : ""} type="button" onClick={() => onChange({ order: "sequential" })}>Come create</button><button className={state.order === "random" ? "selected" : ""} type="button" onClick={() => onChange({ order: "random" })}>Casuale</button></div></fieldset><fieldset><legend>Lato mostrato per primo</legend><div className="segmented"><button className={state.direction === "front-first" ? "selected" : ""} type="button" onClick={() => onChange({ direction: "front-first" })}>Fronte</button><button className={state.direction === "back-first" ? "selected" : ""} type="button" onClick={() => onChange({ direction: "back-first" })}>Retro</button></div></fieldset><button className="primary-dark" type="button" onClick={onClose}>Applica e continua</button></section></div>;
+  return <div className="study-settings-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="study-settings-panel"><button className="round-close" type="button" onClick={onClose}>×</button><h2>Impostazioni di studio</h2><label><span>Font delle flashcards</span><select value={state.font} onChange={(event) => onChange({ font: event.target.value as StudyFont })}><option value="current">Attuale</option><option value="comic">Comic Sans DM</option><option value="helvetica">Helvetica</option><option value="serif">Serif</option><option value="mono">Mono</option></select></label><fieldset><legend>Ordine delle carte</legend><div className="segmented"><button className={state.order === "sequential" ? "selected" : ""} type="button" onClick={() => onChange({ order: "sequential" })}>Come create</button><button className={state.order === "random" ? "selected" : ""} type="button" onClick={() => onChange({ order: "random" })}>Casuale</button></div></fieldset><fieldset><legend>Lato mostrato per primo</legend><div className="segmented"><button className={state.direction === "front-first" ? "selected" : ""} type="button" onClick={() => onChange({ direction: "front-first" })}>Fronte</button><button className={state.direction === "back-first" ? "selected" : ""} type="button" onClick={() => onChange({ direction: "back-first" })}>Retro</button></div></fieldset><button className="primary-dark" type="button" onClick={onClose}>Applica e continua</button></section></div>;
 }
 
 function DeckTransferModal({ deck, folder, onMove, onCopy, onClose }: { deck?: Deck; folder?: Folder; onMove: () => void; onCopy: () => void; onClose: () => void }) {
@@ -2787,7 +2795,7 @@ function FolderPickerModal({ folders, onSelect, onClose }: { folders: Folder[]; 
   const renderLevel = (parentId: string | null, depth = 0): React.ReactNode => folders.filter((folder) => folder.parentId === parentId).map((folder) => {
     const hasChildren = folders.some((item) => item.parentId === folder.id);
     const expanded = open.has(folder.id);
-    return <div className="picker-tree-group" key={folder.id}><div className="picker-tree-row" style={{ "--picker-depth": depth } as React.CSSProperties}><button className="picker-chevron" type="button" disabled={!hasChildren} onClick={() => setOpen((current) => { const next = new Set(current); if (next.has(folder.id)) next.delete(folder.id); else next.add(folder.id); return next; })}>{hasChildren ? (expanded ? "⌄" : "›") : ""}</button><button className="picker-destination" type="button" onClick={() => onSelect(folder.id)}><i style={{ "--folder": folder.color } as React.CSSProperties} /><span>{folder.title}</span></button></div>{expanded && renderLevel(folder.id, depth + 1)}</div>;
+    return <div className="picker-tree-group" key={folder.id}><div className="picker-tree-row" style={{ "--picker-depth": depth, "--folder": folder.color } as React.CSSProperties}><button className="picker-chevron" type="button" disabled={!hasChildren} onClick={() => setOpen((current) => { const next = new Set(current); if (next.has(folder.id)) next.delete(folder.id); else next.add(folder.id); return next; })}>{hasChildren ? (expanded ? "⌄" : "›") : ""}</button><button className="picker-destination" type="button" onClick={() => onSelect(folder.id)}><TablerIcon name={normalizeLumeIcon(folder.icon, "folder")} /><span>{folder.title}</span></button></div>{expanded && renderLevel(folder.id, depth + 1)}</div>;
   });
   return <div className="modal-backdrop-clean" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="folder-picker-modal"><button className="round-close" type="button" onClick={onClose}>×</button><span>Sposta i set</span><h2>Scegli la cartella di destinazione.</h2><button className="picker-root" type="button" onClick={() => onSelect(null)}>Il mio spazio · senza cartella</button><div className="folder-picker-tree">{renderLevel(null)}</div></section></div>;
 }
@@ -2832,7 +2840,7 @@ function UsernameGate({ account, busy, notice, onSave }: { account: CloudAccount
 }
 
 function NotificationCenter({ notifications, onAction, onClose }: { notifications: LumeNotification[]; onAction: (notification: LumeNotification, action: "read" | "approve" | "reject" | "copy") => void; onClose: () => void }) {
-  return <div className="notification-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="notification-center"><header><div><span>Aggiornamenti</span><h2>Notifiche</h2></div><button type="button" onClick={onClose}>×</button></header><div className="notification-list">{notifications.map((notification) => <article className={notification.read ? "read" : ""} key={notification.id}><div><span>{notification.title}</span><small>{new Date(notification.createdAt).toLocaleDateString("it-IT", { day: "numeric", month: "short" })}</small></div><p>{notification.message}</p><footer>{notification.type === "copy_request" && !notification.read ? <><button type="button" onClick={() => onAction(notification, "reject")}>Non approvare</button><button className="primary-dark" type="button" onClick={() => onAction(notification, "approve")}>Autorizza copia</button></> : notification.type === "copy_approved" && !notification.read ? <button className="primary-dark" type="button" onClick={() => onAction(notification, "copy")}>Aggiungi al mio spazio</button> : !notification.read ? <button type="button" onClick={() => onAction(notification, "read")}>Segna come letta</button> : null}</footer></article>)}{!notifications.length && <div className="notification-empty"><strong>Nessuna notifica.</strong><p>Qui appariranno inviti, nuovi materiali, commenti, richieste di copia e valutazioni.</p></div>}</div></aside></div>;
+  return <div className="notification-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="notification-center"><header><div><h2>Notifiche</h2></div><button type="button" onClick={onClose}>×</button></header><div className="notification-list">{notifications.map((notification) => <article className={notification.read ? "read" : ""} key={notification.id}><div><span>{notification.title}</span><small>{new Date(notification.createdAt).toLocaleDateString("it-IT", { day: "numeric", month: "short" })}</small></div><p>{notification.message}</p><footer>{notification.type === "copy_request" && !notification.read ? <><button type="button" onClick={() => onAction(notification, "reject")}>Non approvare</button><button className="primary-dark" type="button" onClick={() => onAction(notification, "approve")}>Autorizza copia</button></> : notification.type === "copy_approved" && !notification.read ? <button className="primary-dark" type="button" onClick={() => onAction(notification, "copy")}>Aggiungi al mio spazio</button> : !notification.read ? <button type="button" onClick={() => onAction(notification, "read")}>Segna come letta</button> : null}</footer></article>)}{!notifications.length && <div className="notification-empty"><strong>Nessun aggiornamento.</strong><p>Qui appariranno inviti, nuovi materiali, commenti, richieste di copia e valutazioni.</p></div>}</div></aside></div>;
 }
 
 function Preferences({ theme, account, cloudStatus, busy, notice, onTheme, onGoogle, onEmailLogin, onEmailRegister, onPasswordReset, onLogout, onClose }: { theme: "light" | "dark"; account: CloudAccount | null; cloudStatus: CloudStatus; busy: boolean; notice: string; onTheme: (theme: "light" | "dark") => void; onGoogle: () => void | Promise<void>; onEmailLogin: (email: string, password: string) => void | Promise<void>; onEmailRegister: (name: string, email: string, password: string) => void | Promise<void>; onPasswordReset: (email: string) => void | Promise<void>; onLogout: () => void | Promise<void>; onClose: () => void }) {
@@ -2865,5 +2873,5 @@ function Preferences({ theme, account, cloudStatus, busy, notice, onTheme, onGoo
 }
 
 function MobileNav({ view, onHome, onFolders, onExplore, onClasses, onCreate }: { view: View; onHome: () => void; onFolders: () => void; onExplore: () => void; onClasses: () => void; onCreate: () => void }) {
-  return <nav className="mobile-nav-new"><button className={view.name === "home" ? "active" : ""} type="button" onClick={onHome}><i className="icon-home" /><span>Spazio</span></button><button className={view.name === "folders" || view.name === "folder" ? "active" : ""} type="button" onClick={onFolders}><i className="icon-folder-line" /><span>Cartelle</span></button><button className="mobile-create" type="button" onClick={onCreate}>＋</button><button className={view.name === "explore" ? "active" : ""} type="button" onClick={onExplore}><i className="icon-search" /><span>Esplora</span></button><button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={onClasses}><i className="icon-classes" /><span>Classi</span></button></nav>;
+  return <nav className="mobile-nav-new"><button className={view.name === "home" ? "active" : ""} type="button" onClick={onHome}><TablerIcon name="home-2" /><span>Spazio</span></button><button className={view.name === "folders" || view.name === "folder" ? "active" : ""} type="button" onClick={onFolders}><TablerIcon name="folder" /><span>Cartelle</span></button><button className="mobile-create" type="button" onClick={onCreate}>＋</button><button className={view.name === "explore" ? "active" : ""} type="button" onClick={onExplore}><TablerIcon name="compass" /><span>Esplora</span></button><button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={onClasses}><TablerIcon name="users-group" /><span>Classi</span></button></nav>;
 }

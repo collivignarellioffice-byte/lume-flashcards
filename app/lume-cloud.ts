@@ -38,6 +38,7 @@ export type CloudFolder = {
   parentId: string | null;
   title: string;
   color: string;
+  icon?: string;
   visibility: "private" | "public";
   createdAt: number;
 };
@@ -60,7 +61,7 @@ export type CloudDeck = {
   description: string;
   color: string;
   pattern: string;
-  emoji?: string;
+  icon?: string;
   visibility: "private" | "public";
   keywordHelp: boolean;
   order: "sequential" | "random";
@@ -192,7 +193,7 @@ function deckMeta(deck: CloudDeck) {
     description: deck.description,
     color: deck.color,
     pattern: deck.pattern,
-    emoji: deck.emoji,
+    icon: deck.icon,
     visibility: deck.visibility,
     keywordHelp: deck.keywordHelp,
     order: deck.order,
@@ -213,7 +214,7 @@ function publicDeckMeta(deck: CloudDeck) {
     description: meta.description,
     color: meta.color,
     pattern: meta.pattern,
-    emoji: meta.emoji,
+    icon: meta.icon,
     visibility: "public" as const,
     keywordHelp: meta.keywordHelp,
     order: meta.order,

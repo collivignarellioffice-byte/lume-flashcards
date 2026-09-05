@@ -6561,6 +6561,423 @@ button,
   }
 }
 
+/* Tabler icon system */
+.tabler-icon {
+  background: currentColor;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 1.25em;
+  -webkit-mask: var(--tabler-icon-url) center / contain no-repeat;
+  mask: var(--tabler-icon-url) center / contain no-repeat;
+  width: 1.25em;
+}
+
+.primary-nav .tabler-icon,
+.sidebar-bottom .tabler-icon,
+.top-tools .tabler-icon {
+  height: 19px;
+  width: 19px;
+}
+
+.tree-folder .tabler-icon {
+  color: color-mix(in srgb, var(--folder) 78%, var(--text));
+  height: 18px;
+  width: 18px;
+}
+
+.tree-deck .tabler-icon,
+.independent-tree .tabler-icon {
+  color: color-mix(in srgb, var(--deck) 76%, var(--text));
+  height: 15px;
+  width: 15px;
+}
+
+.tree-deck,
+.independent-tree button {
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.folder-body > .tabler-icon {
+  height: 25px;
+  margin-bottom: 14px;
+  opacity: 0.76;
+  width: 25px;
+}
+
+.resume-notebook > .tabler-icon {
+  height: 25px;
+  margin-bottom: 14px;
+  opacity: 0.78;
+  position: relative;
+  z-index: 2;
+  width: 25px;
+}
+
+.hero-folder-icon .tabler-icon {
+  height: 34px;
+  width: 34px;
+}
+
+.notebook-cover-icon {
+  height: 27px;
+  margin-bottom: 5px;
+  opacity: 0.82;
+  position: relative;
+  z-index: 2;
+  width: 27px;
+}
+
+.class-item-open > i .tabler-icon {
+  color: color-mix(in srgb, var(--item-color) 50%, #222);
+  height: 34px;
+  left: 50%;
+  position: absolute;
+  top: 52%;
+  transform: translate(-50%, -50%);
+  width: 34px;
+}
+
+.class-import-modal .tabler-icon,
+.picker-destination .tabler-icon {
+  color: color-mix(in srgb, var(--folder, currentColor) 75%, var(--text));
+  height: 20px;
+  width: 20px;
+}
+
+.create-popover > button > .tabler-icon {
+  grid-row: 1 / 3;
+  height: 31px;
+  justify-self: center;
+  width: 31px;
+}
+
+.public-vote .tabler-icon {
+  height: 16px;
+  width: 16px;
+}
+
+.double-thumb {
+  display: grid;
+  height: 18px;
+  position: relative;
+  width: 19px;
+}
+
+.double-thumb .tabler-icon {
+  grid-area: 1 / 1;
+  height: 13px;
+  width: 13px;
+}
+
+.double-thumb .tabler-icon:last-child {
+  justify-self: end;
+  margin-top: 5px;
+}
+
+.search-box > .tabler-icon,
+.icon-search > .tabler-icon {
+  color: var(--muted);
+  height: 19px;
+  width: 19px;
+}
+
+.folder-preview-icon {
+  height: 34px;
+  margin-bottom: 18px;
+  opacity: 0.76;
+  width: 34px;
+}
+
+.icon-choice-button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 3px 13px;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  min-height: 58px;
+  padding: 8px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.icon-choice-button:hover {
+  background: var(--panel-soft);
+  border-color: var(--icon-choice-color);
+}
+
+.icon-choice-button > .tabler-icon {
+  background-color: color-mix(in srgb, var(--icon-choice-color) 76%, var(--text));
+  height: 25px;
+  justify-self: center;
+  width: 25px;
+}
+
+.icon-choice-button > span {
+  display: grid;
+  gap: 2px;
+}
+
+.icon-choice-button small,
+.icon-choice-button em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.icon-choice-button strong {
+  font-size: 13px;
+  font-weight: 480;
+}
+
+.icon-picker-backdrop {
+  z-index: 1200;
+}
+
+.icon-picker-modal {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  max-height: min(760px, calc(100vh - 34px));
+  max-width: 850px;
+  overflow: hidden;
+  width: min(850px, calc(100vw - 34px));
+}
+
+.icon-picker-modal > header {
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  padding: 24px 26px 20px;
+}
+
+.icon-picker-modal > header span,
+.icon-picker-modal h3 {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.icon-picker-modal > header h2 {
+  font-size: 25px;
+  font-weight: 460;
+  letter-spacing: -0.035em;
+  margin: 6px 0 0;
+}
+
+.icon-search {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto 1fr;
+  margin: 18px 26px 10px;
+  padding: 0 13px;
+}
+
+.icon-search input {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  min-height: 43px;
+  outline: 0;
+  width: 100%;
+}
+
+.icon-category-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 0 26px 14px;
+}
+
+.icon-category-tabs button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  padding: 7px 11px;
+  white-space: nowrap;
+}
+
+.icon-category-tabs button.active {
+  background: color-mix(in srgb, var(--icon-choice-color) 16%, var(--panel));
+  border-color: color-mix(in srgb, var(--icon-choice-color) 68%, var(--line));
+  color: var(--text);
+}
+
+.icon-picker-results {
+  overflow-y: auto;
+  padding: 2px 26px 22px;
+}
+
+.icon-picker-results > section + section {
+  margin-top: 22px;
+}
+
+.icon-picker-results h3 {
+  margin: 0 0 9px;
+}
+
+.icon-picker-results section > div {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+}
+
+.icon-picker-results section button {
+  align-items: center;
+  aspect-ratio: 1;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 8px;
+  justify-content: center;
+  min-width: 0;
+  padding: 8px 4px;
+}
+
+.icon-picker-results section button:hover,
+.icon-picker-results section button.selected {
+  background: color-mix(in srgb, var(--icon-choice-color) 14%, var(--panel));
+  border-color: var(--icon-choice-color);
+}
+
+.icon-picker-results section button .tabler-icon {
+  height: 25px;
+  width: 25px;
+}
+
+.icon-picker-results section button span {
+  color: var(--muted);
+  font-size: 8px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-picker-modal > footer {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  display: flex;
+  font-size: 9px;
+  justify-content: space-between;
+  padding: 14px 26px;
+}
+
+.icon-picker-modal > footer button {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+
+/* Previous/next study navigation */
+.study-floating-nav {
+  display: flex;
+  justify-content: space-between;
+  left: 2.2vw;
+  pointer-events: none;
+  position: fixed;
+  right: 2.2vw;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 6;
+}
+
+.study-floating-nav button {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  height: 43px;
+  justify-content: center;
+  pointer-events: auto;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  width: 43px;
+}
+
+.study-floating-nav button:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--study);
+  transform: scale(1.04);
+}
+
+.study-floating-nav button:disabled {
+  cursor: default;
+  opacity: 0.22;
+}
+
+.study-floating-nav .tabler-icon {
+  height: 21px;
+  width: 21px;
+}
+
+@media (max-width: 860px) {
+  .icon-picker-results section > div {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .mobile-nav-new .tabler-icon {
+    height: 19px;
+    width: 19px;
+  }
+
+  .study-floating-nav {
+    bottom: calc(92px + env(safe-area-inset-bottom));
+    left: 18px;
+    right: 18px;
+    top: auto;
+    transform: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .icon-picker-modal {
+    border-radius: 14px 14px 0 0;
+    max-height: calc(100vh - 14px);
+    width: 100vw;
+  }
+
+  .icon-picker-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .icon-picker-results section > div {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .icon-picker-modal > footer span {
+    max-width: 70%;
+  }
+}
+
 @media (max-width: 1024px) and (orientation: landscape) and (max-height: 600px) {
   .topbar-new {
     height: calc(54px + env(safe-area-inset-top));

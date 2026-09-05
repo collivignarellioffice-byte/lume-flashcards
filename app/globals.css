@@ -6563,12 +6563,10 @@ button,
 
 /* Tabler icon system */
 .tabler-icon {
-  background: currentColor;
-  display: inline-block;
+  display: block;
   flex: 0 0 auto;
   height: 1.25em;
-  -webkit-mask: var(--tabler-icon-url) center / contain no-repeat;
-  mask: var(--tabler-icon-url) center / contain no-repeat;
+  overflow: visible;
   width: 1.25em;
 }
 
@@ -6711,7 +6709,7 @@ button,
 }
 
 .icon-choice-button > .tabler-icon {
-  background-color: color-mix(in srgb, var(--icon-choice-color) 76%, var(--text));
+  color: color-mix(in srgb, var(--icon-choice-color) 76%, var(--text));
   height: 25px;
   justify-self: center;
   width: 25px;

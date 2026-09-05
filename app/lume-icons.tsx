@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, type CSSProperties } from "react";
+import { tablerIconMarkup } from "./tabler-icon-data";
 
 type IconOption = { name: string; label: string };
 type IconGroup = { name: string; icons: IconOption[] };
@@ -69,15 +70,22 @@ export function normalizeLumeIcon(value: unknown, fallback: "folder" | "book-2" 
 }
 
 export function TablerIcon({ name, className = "", label }: { name: string; className?: string; label?: string }) {
-  const base = import.meta.env.BASE_URL || "/";
   const safeName = /^[a-z0-9-]+$/.test(name) ? name : "book-2";
+  const markup = tablerIconMarkup[safeName] ?? tablerIconMarkup["book-2"];
   return (
-    <span
+    <svg
       className={`tabler-icon ${className}`.trim()}
-      style={{ "--tabler-icon-url": `url("${base}tabler-icons/${safeName}.svg")` } as CSSProperties}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
       role={label ? "img" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
+      focusable="false"
+      dangerouslySetInnerHTML={{ __html: markup }}
     />
   );
 }

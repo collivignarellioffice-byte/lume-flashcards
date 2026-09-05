@@ -122,7 +122,7 @@ export function IconPicker({ selected, color, kind, onSelect, onClose }: { selec
           <div><span>Libreria Tabler</span><h2>Scegli l’icona {kind === "folder" ? "della cartella" : "del set"}.</h2></div>
           <button className="round-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
         </header>
-        <label className="icon-search"><TablerIcon name="search" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cerca un’icona…" /></label>
+        <label className="icon-picker-search"><TablerIcon name="search" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cerca un’icona…" /></label>
         <nav className="icon-category-tabs" aria-label="Categorie di icone">
           {["Tutte", ...iconGroups.map((item) => item.name)].map((name) => <button className={group === name ? "active" : ""} type="button" key={name} onClick={() => setGroup(name)}>{name}</button>)}
         </nav>

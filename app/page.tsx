@@ -662,6 +662,7 @@ export default function LumeApp() {
   const [showKeywords, setShowKeywords] = useState(false);
   const [studySettingsOpen, setStudySettingsOpen] = useState(false);
   const spaceHoldTimer = useRef<number | null>(null);
+  const keywordRevealTimer = useRef<number | null>(null);
   const spaceLongPress = useRef(false);
   const [deckTransfer, setDeckTransfer] = useState<{ deckId: string; targetFolderId: string } | null>(null);
   const [batchMove, setBatchMove] = useState<string[] | null>(null);
@@ -703,6 +704,10 @@ export default function LumeApp() {
     setDecks(library.decks.map(fromCloudDeck));
     setStudyDays(library.studyDays);
     setFocusMinutes(Math.min(240, Math.max(1, library.focusMinutes)));
+  }, []);
+
+  useEffect(() => () => {
+    if (keywordRevealTimer.current !== null) window.clearTimeout(keywordRevealTimer.current);
   }, []);
 
   useEffect(() => {
@@ -906,7 +911,7 @@ export default function LumeApp() {
         if (current.finishedAt) return current;
         return now - current.startedAt >= current.duration ? { ...current, finishedAt: now } : current;
       });
-      setBreathing((current) => current && now - current.startedAt >= 80000 ? null : current);
+      setBreathing((current) => current && now - current.startedAt >= 50000 ? null : current);
     }, 120);
     return () => window.clearInterval(id);
   }, [focus, breathing]);
@@ -1644,6 +1649,7 @@ export default function LumeApp() {
             return { ...current, pausedAt: Date.now() };
           })
         }
+        onToggleTimer={() => setTimerVisible((visible) => !visible)}
         onExit={() => setFocus(null)}
       />
     );
@@ -1674,8 +1680,12 @@ export default function LumeApp() {
         onCloseSettings={() => setStudySettingsOpen(false)}
         onSettingsChange={updateStudySettings}
         onKeywords={() => {
+          if (keywordRevealTimer.current !== null) window.clearTimeout(keywordRevealTimer.current);
           setShowKeywords(true);
-          window.setTimeout(() => setShowKeywords(false), 3000);
+          keywordRevealTimer.current = window.setTimeout(() => {
+            setShowKeywords(false);
+            keywordRevealTimer.current = null;
+          }, 3000);
         }}
         onRestartMissed={() => {
           const difficultIds = difficultStudyCardIds(study);
@@ -2216,8 +2226,8 @@ function Home({
             <>
               <button className={randomFlipped ? "random-stack flipped" : "random-stack"} type="button" onClick={onFlipRandom}>
                 <span className="stack-sheet sheet-one" /><span className="stack-sheet sheet-two" />
-                <span className="random-card front"><small>{randomEntry.deck.title || "Set senza nome"}</small><RichText value={randomEntry.card.front} /><em>Clicca per rivelare</em></span>
-                <span className="random-card back"><small>Significato</small><RichText value={randomEntry.card.back} /><em>Torna alla domanda</em></span>
+                <span className="random-card front"><small>{randomEntry.deck.title || "Set senza nome"}</small><RichText value={randomEntry.card.front} /><em>Gira la carta</em></span>
+                <span className="random-card back"><small>Significato</small><RichText value={randomEntry.card.back} /><em>Gira di nuovo</em></span>
               </button>
               <button className="continue-random" type="button" onClick={onStudyRandom}>Continua a studiare →</button>
             </>
@@ -2626,10 +2636,10 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
       </section>
       <aside className="notebook-preview-column"><span>Anteprima copertina</span><Notebook deck={{ id: "preview", folderId, title: title || "Il tuo set", description: description || "Domande e risposte", color: effectiveColor, pattern, icon, visibility, keywordHelp, order, direction, cardColorMode, cardColor, cards: completePairs.map((item, index) => ({ id: String(index), front: item.front, back: item.back, known: 0, missed: 0 })), createdAt: 0 }} onOpen={() => undefined} /></aside>
     </div>}
-    {step === 2 && <div className="card-writing-layout vertical-editor" onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragImportActive(true); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragImportActive(false); }} onDrop={(event) => { event.preventDefault(); setDragImportActive(false); void importMarkdown(event.dataTransfer.files?.[0]); }}><aside className="set-options-panel sticky-options"><div className="readonly-set-title"><span>Titolo del set</span><h2>{title}</h2></div><fieldset className="clean-fieldset"><legend>Ordine predefinito</legend><div className="segmented"><button className={order === "sequential" ? "selected" : ""} type="button" onClick={() => setOrder("sequential")}>In ordine</button><button className={order === "random" ? "selected" : ""} type="button" onClick={() => setOrder("random")}>Casuale</button></div></fieldset><fieldset className="clean-fieldset"><legend>Verso predefinito</legend><div className="segmented"><button className={direction === "front-first" ? "selected" : ""} type="button" onClick={() => setDirection("front-first")}>Fronte prima</button><button className={direction === "back-first" ? "selected" : ""} type="button" onClick={() => setDirection("back-first")}>Retro prima</button></div></fieldset><div className="keyword-option"><label className="toggle-row"><input type="checkbox" checked={keywordHelp} onChange={(event) => setKeywordHelp(event.target.checked)} /><i /><span><b>Keyword Help</b><small>Usa il neretto come indizio.</small></span></label><button className="help-dot" type="button" onClick={() => setKeywordInfoOpen((open) => !open)} aria-label="Come funziona Keyword Help">?</button></div>{keywordInfoOpen && <p className="keyword-info">Durante lo studio, tieni premuta la barra spaziatrice: il testo si sfoca e restano leggibili soltanto le parole messe in neretto.</p>}<button className="llm-set-button" type="button" onClick={() => setPromptOpen(true)}><span>Prepara il set con un LLM</span><small>Visualizza e copia il prompt adatto.</small></button><button className="sidebar-import-button" type="button" onClick={() => fileRef.current?.click()}>↑ Importa o trascina file .md</button><input ref={fileRef} className="sr-only" type="file" accept=".md" onChange={(event) => { void importMarkdown(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importMessage && <p className="import-status">{importMessage}</p>}<button className="delete-all-cards" type="button" onClick={() => setDeleteAllOpen(true)}>Elimina tutte le flashcards</button></aside><section className="card-editor-workspace vertical-card-workspace"><div className="editor-toolbar-title"><div><span>Flashcards</span><strong>{completePairs.length} pronte</strong></div></div><div className="card-pair-list">{pairs.map((pair, index) => <article className={(pair.id ?? `draft-${index}`) === deletingPairKey ? "card-pair-editor removing" : "card-pair-editor"} key={pair.id ?? `draft-${index}`}><header><span>Flashcard {String(index + 1).padStart(2, "0")}</span><button type="button" onClick={() => deletePair(index)} aria-label={`Elimina flashcard ${index + 1}`}>×</button></header><RichEditor id={`front-${index}`} label="Fronte" value={pair.front} placeholder="Scrivi la domanda o il concetto principale…" autoFocus={index === 0} onChange={(value) => updatePair(index, "front", value)} onTab={() => document.getElementById(`back-${index}`)?.focus()} /><RichEditor id={`back-${index}`} label="Retro" value={pair.back} placeholder="Scrivi la risposta o la spiegazione…" onChange={(value) => updatePair(index, "back", value)} onTab={() => document.getElementById("add-pair")?.focus()} /></article>)}</div><button id="add-pair" className="add-pair" type="button" onClick={addPair}>＋ Aggiungi un’altra coppia</button></section>{dragImportActive && <div className="md-drop-overlay"><div><strong>Rilascia qui il file .md</strong><span>Le flashcards verranno importate automaticamente.</span></div></div>}</div>}
+    {step === 2 && <div className="card-writing-layout vertical-editor" onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragImportActive(true); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragImportActive(false); }} onDrop={(event) => { event.preventDefault(); setDragImportActive(false); void importMarkdown(event.dataTransfer.files?.[0]); }}><aside className="set-options-panel sticky-options"><div className="readonly-set-title"><span>Titolo del set</span><h2>{title}</h2></div><fieldset className="clean-fieldset"><legend>Ordine predefinito</legend><div className="segmented"><button className={order === "sequential" ? "selected" : ""} type="button" onClick={() => setOrder("sequential")}>In ordine</button><button className={order === "random" ? "selected" : ""} type="button" onClick={() => setOrder("random")}>Casuale</button></div></fieldset><fieldset className="clean-fieldset"><legend>Verso predefinito</legend><div className="segmented"><button className={direction === "front-first" ? "selected" : ""} type="button" onClick={() => setDirection("front-first")}>Fronte prima</button><button className={direction === "back-first" ? "selected" : ""} type="button" onClick={() => setDirection("back-first")}>Retro prima</button></div></fieldset><div className="keyword-option"><label className="toggle-row"><input type="checkbox" checked={keywordHelp} onChange={(event) => setKeywordHelp(event.target.checked)} /><i /><span><b>Keyword Help</b><small>Usa il neretto come indizio.</small></span></label><button className="help-dot" type="button" onClick={() => setKeywordInfoOpen((open) => !open)} aria-label="Come funziona Keyword Help">?</button></div>{keywordInfoOpen && <p className="keyword-info"><span className="hardware-only">Durante lo studio, tieni premuta la barra spaziatrice: il testo si sfoca e restano leggibili soltanto le parole messe in neretto.</span><span className="touch-only">Durante lo studio usa “Mostra keyword”: gli indizi in neretto resteranno visibili per 3 secondi.</span></p>}<button className="llm-set-button" type="button" onClick={() => setPromptOpen(true)}><span>Prepara il set con un LLM</span><small>Visualizza e copia il prompt adatto.</small></button><button className="sidebar-import-button" type="button" onClick={() => fileRef.current?.click()}>↑ Importa o trascina file .md</button><input ref={fileRef} className="sr-only" type="file" accept=".md" onChange={(event) => { void importMarkdown(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importMessage && <p className="import-status">{importMessage}</p>}<button className="delete-all-cards" type="button" onClick={() => setDeleteAllOpen(true)}>Elimina tutte le flashcards</button></aside><section className="card-editor-workspace vertical-card-workspace"><div className="editor-toolbar-title"><div><span>Flashcards</span><strong>{completePairs.length} pronte</strong></div></div><div className="card-pair-list">{pairs.map((pair, index) => <article className={(pair.id ?? `draft-${index}`) === deletingPairKey ? "card-pair-editor removing" : "card-pair-editor"} key={pair.id ?? `draft-${index}`}><header><span>Flashcard {String(index + 1).padStart(2, "0")}</span><button type="button" onClick={() => deletePair(index)} aria-label={`Elimina flashcard ${index + 1}`}>×</button></header><RichEditor id={`front-${index}`} label="Fronte" value={pair.front} placeholder="Scrivi la domanda o il concetto principale…" autoFocus={index === 0} onChange={(value) => updatePair(index, "front", value)} onTab={() => document.getElementById(`back-${index}`)?.focus()} /><RichEditor id={`back-${index}`} label="Retro" value={pair.back} placeholder="Scrivi la risposta o la spiegazione…" onChange={(value) => updatePair(index, "back", value)} onTab={() => document.getElementById("add-pair")?.focus()} /></article>)}</div><button id="add-pair" className="add-pair" type="button" onClick={addPair}>＋ Aggiungi un’altra coppia</button></section>{dragImportActive && <div className="md-drop-overlay"><div><strong>Rilascia qui il file .md</strong><span>Le flashcards verranno importate automaticamente.</span></div></div>}</div>}
     {step === 3 && <div className="summary-layout refined-summary">
       <aside className="summary-data"><span>Riepilogo</span><h2>{title || "Set senza nome"}</h2><dl><div><dt>Flashcards</dt><dd>{completePairs.length}</dd></div><div><dt>Ordine</dt><dd>{order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Keyword Help</dt><dd>{keywordHelp ? "Attivo" : "Disattivo"}</dd></div></dl><fieldset className="clean-fieldset"><legend>Colore delle flashcards</legend><div className="segmented"><button className={cardColorMode === "single" ? "selected" : ""} type="button" onClick={() => setCardColorMode("single")}>Colore fisso</button><button className={cardColorMode === "random" ? "selected" : ""} type="button" onClick={() => setCardColorMode("random")}>Casuale a ogni studio</button></div>{cardColorMode === "single" && <div className="color-palette compact">{cardColors.map((option) => <button className={cardColor === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => setCardColor(option)} aria-label={`Colore flashcard ${option}`} />)}</div>}</fieldset></aside>
-      <section className="study-simulation"><h1>Prova il tuo set.</h1>{previewPair ? <><div className="summary-card-wrap"><button key={previewIndex} className={previewBack ? "simulation-card flipped" : "simulation-card"} type="button" onClick={() => setPreviewBack((back) => !back)}><span className="simulation-card-inner"><span className="simulation-face simulation-front" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.46) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.86) }}><small>{direction === "front-first" ? "Fronte" : "Retro"}</small><RichText value={previewFirst} /><em>Clicca per girare</em></span><span className="simulation-face simulation-back" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.3) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.72) }}><small>{direction === "front-first" ? "Retro" : "Fronte"}</small><RichText value={previewSecond} /><em>Clicca per girare</em></span></span></button></div><div className="simulation-controls"><button type="button" disabled={previewIndex === 0} onClick={() => { setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); }}>←</button><span>{previewIndex + 1} di {completePairs.length}</span><button type="button" disabled={previewIndex >= completePairs.length - 1} onClick={() => { setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); }}>→</button></div></> : <div className="empty-summary-preview"><strong>Il set è ancora vuoto.</strong><p>Puoi salvarlo adesso e aggiungere le flashcards in un secondo momento.</p></div>}</section>
+      <section className="study-simulation"><h1>Prova il tuo set.</h1>{previewPair ? <><div className="summary-card-wrap"><button key={previewIndex} className={previewBack ? "simulation-card flipped" : "simulation-card"} type="button" onClick={() => setPreviewBack((back) => !back)}><span className="simulation-card-inner"><span className="simulation-face simulation-front" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.46) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.86) }}><small>{direction === "front-first" ? "Fronte" : "Retro"}</small><RichText value={previewFirst} /><em><span className="hardware-only">Clicca per girare</span><span className="touch-only">Tocca per girare</span></em></span><span className="simulation-face simulation-back" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.3) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.72) }}><small>{direction === "front-first" ? "Retro" : "Fronte"}</small><RichText value={previewSecond} /><em><span className="hardware-only">Clicca per girare</span><span className="touch-only">Tocca per girare</span></em></span></span></button></div><div className="simulation-controls"><button type="button" disabled={previewIndex === 0} onClick={() => { setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); }}>←</button><span>{previewIndex + 1} di {completePairs.length}</span><button type="button" disabled={previewIndex >= completePairs.length - 1} onClick={() => { setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); }}>→</button></div></> : <div className="empty-summary-preview"><strong>Il set è ancora vuoto.</strong><p>Puoi salvarlo adesso e aggiungere le flashcards in un secondo momento.</p></div>}</section>
     </div>}
   </main>{iconPickerOpen && <IconPicker selected={icon} color={effectiveColor} kind="deck" onSelect={setIcon} onClose={() => setIconPickerOpen(false)} />}{promptOpen && <LLMPromptModal keywordHelp={keywordHelp} onClose={() => setPromptOpen(false)} onCopied={setImportMessage} />}{deleteAllOpen && <DeleteCardsConfirmModal count={pairs.filter((pair) => plainText(pair.front) || plainText(pair.back)).length} onClose={() => setDeleteAllOpen(false)} onConfirm={() => { setPairs([{ front: "", back: "" }]); setDeleteAllOpen(false); }} />}{abandonOpen && <AbandonCreatorModal onClose={() => setAbandonOpen(false)} onConfirm={onClose} />}</div>;
 }
@@ -2694,6 +2704,8 @@ function difficultStudyCardIds(state: StudyState) {
 }
 
 function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen, onFlip, onKnow, onMiss, onMove, onPin, onPinComment, onOpenSettings, onCloseSettings, onSettingsChange, onKeywords, onChooseMode, onRestartMissed, onRestartAll, onExit }: { theme: "light" | "dark"; state: StudyState; entry: { deck: Deck; card: Card } | null; library: Deck[]; showKeywords: boolean; settingsOpen: boolean; onFlip: () => void; onKnow: () => void; onMiss: () => void; onMove: (delta: -1 | 1) => void; onPin: () => void; onPinComment: (value: string) => void; onOpenSettings: () => void; onCloseSettings: () => void; onSettingsChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onKeywords: () => void; onChooseMode: (mode: StudyMode) => void; onRestartMissed: () => void; onRestartAll: () => void; onExit: () => void }) {
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
+  const swipeHandled = useRef(false);
   const firstDeck = library.find((deck) => state.deckIds.includes(deck.id));
   const baseColor = state.cardColor || firstDeck?.color || "#91aaa4";
   const difficultIds = difficultStudyCardIds(state);
@@ -2771,11 +2783,75 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
   const cardColor = theme === "dark" ? darken(baseColor, 0.46) : tint(baseColor, 0.84);
   const secondColor = theme === "dark" ? darken(baseColor, 0.30) : tint(baseColor, 0.72);
   const modeLabel = state.mode === "learn" ? "Impara" : "Test";
+  const startSwipe = (event: React.TouchEvent<HTMLButtonElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    swipeStart.current = { x: touch.clientX, y: touch.clientY };
+    swipeHandled.current = false;
+  };
+  const finishSwipe = (event: React.TouchEvent<HTMLButtonElement>) => {
+    const start = swipeStart.current;
+    const touch = event.changedTouches[0];
+    swipeStart.current = null;
+    if (!start || !touch) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (Math.abs(deltaX) < 52 || Math.abs(deltaX) < Math.abs(deltaY) * 1.35) return;
+    swipeHandled.current = true;
+    onMove(deltaX < 0 ? 1 : -1);
+  };
   return (
     <div className="study-screen" style={{ "--study": baseColor, "--study-soft": cardColor, "--study-back": secondColor, "--study-font": studyFontStack(state.font) } as React.CSSProperties}>
-      <nav className="study-floating-nav" aria-label="Navigazione tra flashcard"><button type="button" disabled={state.index === 0} onClick={() => onMove(-1)} aria-label="Flashcard precedente"><TablerIcon name="chevron-left" /></button><button type="button" disabled={state.index >= state.cardIds.length - 1} onClick={() => onMove(1)} aria-label="Flashcard successiva"><TablerIcon name="chevron-right" /></button></nav>
       <header><button className="study-exit" type="button" onClick={onExit}>× Esci</button><div><strong>{entry.deck.title || "Set senza nome"}</strong><span>{modeLabel} · {state.index + 1} / {state.cardIds.length}</span></div><div className="study-session-meta"><span>{state.streak} streak</span><span>{state.mode === "learn" ? `${state.learnedIds.length} imparate · ${difficultIds.length} difficili` : `${state.attempts} risposte · ${difficultIds.length} errori`}</span><button className={entry.card.pinned ? "pin-button pinned" : "pin-button"} type="button" onClick={onPin} aria-label={entry.card.pinned ? "Rimuovi pin dalla flashcard" : "Metti un pin alla flashcard"}><i /> <span>{entry.card.pinned ? "Con pin" : "Pin"}</span></button><button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><i><b /><b /><b /></i><span>Impostazioni</span></button></div></header>
-      <main><p>{state.mode === "learn" ? "La ricordi ora?" : "Conoscevi la risposta?"}</p><button key={`${entry.card.id}-${state.index}`} className={state.flipped ? "study-card flipped" : "study-card"} type="button" onClick={onFlip}><span className="study-card-inner"><span className="study-face study-front" style={{ "--card-font-size": studyTextSize(firstValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Domanda" : "Risposta"}</small><RichText value={firstValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span><span className="study-face study-back" style={{ "--card-font-size": studyTextSize(secondValue) } as React.CSSProperties}><small>{state.direction === "front-first" ? "Risposta" : "Domanda"}</small><RichText value={secondValue} /><em>Spazio per girare</em>{entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}</span></span>{showKeywords && keywords.length > 0 && <span className="keyword-overlay" style={{ "--keyword-font-size": studyTextSize(entry.card.back) } as React.CSSProperties}><small>Keywords</small><RichText value={entry.card.back} /><em>Rilascia la barra spaziatrice per nasconderle</em></span>}</button>{entry.card.pinned && <label className="study-pin-note"><span>Nota per la revisione</span><input value={entry.card.pinComment ?? ""} onChange={(event) => onPinComment(event.target.value)} placeholder="Es. controllare la definizione o correggere un errore…" /></label>}<div className="study-sequence-note"><span>{state.mode === "learn" ? "Le carte non ricordate tornano dopo 3 altre carte." : "Ogni carta conta una sola volta nel punteggio."}</span><strong>{state.mode === "learn" ? `${state.learnedIds.length}/${totalCards} imparate` : `${state.attempts}/${totalCards} risposte`}</strong></div><div className="study-actions"><button type="button" onClick={onKnow}><b>1</b><span><strong>La so</strong><small>{state.mode === "learn" ? "Questa carta è imparata" : "Segna come corretta"}</small></span></button><button type="button" onClick={onMiss}><b>2</b><span><strong>Non la so</strong><small>{state.mode === "learn" ? "Torna dopo 3 altre carte" : "Segna come errore"}</small></span></button></div>{keywords.length > 0 && <button className="keyword-button" type="button" onClick={onKeywords}>Tieni premuta la barra spaziatrice · Mostra keywords</button>}<p className="study-shortcuts">Spazio gira · 1 La so · 2 Non la so · 3 Pin</p></main>
+      <main>
+        <p>{state.mode === "learn" ? "La ricordi ora?" : "Conoscevi la risposta?"}</p>
+        <button
+          key={`${entry.card.id}-${state.index}`}
+          className={state.flipped ? "study-card flipped" : "study-card"}
+          type="button"
+          onClick={() => {
+            if (swipeHandled.current) {
+              swipeHandled.current = false;
+              return;
+            }
+            onFlip();
+          }}
+          onTouchStart={startSwipe}
+          onTouchEnd={finishSwipe}
+          aria-label={`Flashcard ${state.index + 1} di ${state.cardIds.length}. Tocca per girarla.`}
+        >
+          <span className="study-card-inner">
+            <span className="study-face study-front" style={{ "--card-font-size": studyTextSize(firstValue) } as React.CSSProperties}>
+              <small>{state.direction === "front-first" ? "Domanda" : "Risposta"}</small>
+              <RichText value={firstValue} />
+              <em><span className="hardware-only">Spazio per girare</span><span className="touch-only">Tocca per girare</span></em>
+              {entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}
+            </span>
+            <span className="study-face study-back" style={{ "--card-font-size": studyTextSize(secondValue) } as React.CSSProperties}>
+              <small>{state.direction === "front-first" ? "Risposta" : "Domanda"}</small>
+              <RichText value={secondValue} />
+              <em><span className="hardware-only">Spazio per girare</span><span className="touch-only">Tocca per girare</span></em>
+              {entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}
+            </span>
+          </span>
+          {showKeywords && keywords.length > 0 && (
+            <span className="keyword-overlay" style={{ "--keyword-font-size": studyTextSize(entry.card.back) } as React.CSSProperties}>
+              <small>Keywords</small>
+              <RichText value={entry.card.back} />
+              <em><span className="hardware-only">Rilascia la barra spaziatrice per nasconderle</span><span className="touch-only">Si nascondono tra 3 secondi</span></em>
+            </span>
+          )}
+        </button>
+        <nav className="study-floating-nav study-inline-nav" aria-label="Navigazione tra flashcard"><button type="button" disabled={state.index === 0} onClick={() => onMove(-1)} aria-label="Flashcard precedente"><TablerIcon name="chevron-left" /></button><button type="button" disabled={state.index >= state.cardIds.length - 1} onClick={() => onMove(1)} aria-label="Flashcard successiva"><TablerIcon name="chevron-right" /></button></nav>
+        {entry.card.pinned && <label className="study-pin-note"><span>Nota per la revisione</span><input value={entry.card.pinComment ?? ""} onChange={(event) => onPinComment(event.target.value)} placeholder="Es. controllare la definizione o correggere un errore…" /></label>}
+        <div className="study-sequence-note"><span>{state.mode === "learn" ? "Le carte non ricordate tornano dopo 3 altre carte." : "Ogni carta conta una sola volta nel punteggio."}</span><strong>{state.mode === "learn" ? `${state.learnedIds.length}/${totalCards} imparate` : `${state.attempts}/${totalCards} risposte`}</strong></div>
+        <div className="study-actions">
+          <button type="button" onClick={onKnow}><b className="hardware-only">1</b><span><strong>La so</strong><small>{state.mode === "learn" ? "Questa carta è imparata" : "Segna come corretta"}</small></span></button>
+          <button type="button" onClick={onMiss}><b className="hardware-only">2</b><span><strong>Non la so</strong><small>{state.mode === "learn" ? "Torna dopo 3 altre carte" : "Segna come errore"}</small></span></button>
+        </div>
+        {keywords.length > 0 && <button className={showKeywords ? "keyword-button active" : "keyword-button"} type="button" onClick={onKeywords} aria-pressed={showKeywords}><span className="hardware-only">Tieni premuta la barra spaziatrice · Mostra keywords</span><span className="touch-only">{showKeywords ? "Keywords visibili" : "Mostra keyword"}</span></button>}
+        <p className="study-shortcuts hardware-only">Spazio gira · 1 La so · 2 Non la so · 3 Pin</p>
+      </main>
       {settingsOpen && <StudySettings state={state} onChange={onSettingsChange} onClose={onCloseSettings} />}
     </div>
   );
@@ -2808,19 +2884,19 @@ function FocusSetup({ minutes, onMinutes, onStart, onClose }: { minutes: number;
   return <div className="modal-backdrop-clean"><section className="focus-setup"><button className="round-close" type="button" onClick={onClose}>×</button><h2>Quanto durerà la tua candela?</h2><p>Il tempo scelto indica quanto impiegherà la candela a consumarsi completamente mentre studi senza distrazioni.</p><div className="minute-options">{[15, 25, 45, 60].map((option) => <button className={minutes === option ? "selected" : ""} type="button" key={option} onClick={() => onMinutes(option)}><strong>{option}</strong><span>min</span></button>)}</div><label className="custom-focus-time"><span>Tempo di consumo personalizzato</span><div><input type="number" min="1" max="240" value={minutes} onChange={(event) => onMinutes(Math.min(240, Math.max(1, Number(event.target.value) || 1)))} /><span>minuti</span></div></label><button className="primary-dark" type="button" onClick={onStart}>Accendi la candela →</button></section></div>;
 }
 
-function FocusScreen({ remaining, duration, visible, paused, finished, onPause, onExit }: { remaining: number; duration: number; visible: boolean; paused: boolean; finished: boolean; onPause: () => void; onExit: () => void }) {
+function FocusScreen({ remaining, duration, visible, paused, finished, onPause, onToggleTimer, onExit }: { remaining: number; duration: number; visible: boolean; paused: boolean; finished: boolean; onPause: () => void; onToggleTimer: () => void; onExit: () => void }) {
   const progress = Math.max(0, remaining / duration);
   const minutes = Math.floor(remaining / 60000);
   const seconds = Math.floor((remaining % 60000) / 1000);
-  return <div className={finished ? "focus-screen finished" : "focus-screen"}><div className={visible ? "focus-time" : "focus-time hidden"}><span>{finished ? "La candela si è consumata." : "Studia senza distrazioni."}</span><strong>{String(minutes).padStart(2, "0")}:{String(seconds).padStart(2, "0")}</strong></div><div className="graphic-candle" style={{ "--wax-progress": progress } as React.CSSProperties}><span className="wax"><span className="candle-moving-head"><span className="candle-glow" /><span className="flame"><i /></span><span className="wick" /></span><i /></span><span className="smoke"><i /><i /><i /></span><span className="candle-shadow" /></div><small className="focus-hint">Premi la barra spaziatrice per nascondere il timer</small><div className="focus-controls">{!finished && <button type="button" onClick={onPause}>{paused ? "Riprendi" : "Pausa"}</button>}<button type="button" onClick={onExit}>Esci</button></div></div>;
+  return <div className={finished ? "focus-screen finished" : "focus-screen"}><div className={visible ? "focus-time" : "focus-time hidden"}><span>{finished ? "La candela si è consumata." : "Studia senza distrazioni."}</span><strong>{String(minutes).padStart(2, "0")}:{String(seconds).padStart(2, "0")}</strong></div><div className="graphic-candle" style={{ "--wax-progress": progress } as React.CSSProperties}><span className="wax"><span className="candle-moving-head"><span className="candle-glow" /><span className="flame"><i /></span><span className="wick" /></span><i /></span><span className="smoke"><i /><i /><i /></span><span className="candle-shadow" /></div><small className="focus-hint hardware-only">Premi la barra spaziatrice per nascondere il timer</small><div className="focus-controls">{!finished && <button className="focus-timer-toggle touch-only" type="button" onClick={onToggleTimer}>{visible ? "Nascondi timer" : "Mostra timer"}</button>}{!finished && <button type="button" onClick={onPause}>{paused ? "Riprendi" : "Pausa"}</button>}<button type="button" onClick={onExit}>Esci</button></div></div>;
 }
 
 function BreathingScreen({ elapsed, onExit }: { elapsed: number; onExit: () => void }) {
-  const cycle = Math.min(10, Math.floor(elapsed / 8000) + 1);
-  const inCycle = elapsed % 8000;
-  const inhale = inCycle < 4000;
-  const seconds = Math.max(1, Math.ceil((4000 - (inCycle % 4000)) / 1000));
-  return <div className="breathing-screen"><header><button type="button" onClick={onExit}>Esci</button></header><section className="breathing-copy"><strong>{seconds} secondi</strong><span>{cycle} di 10</span><p>{inhale ? "Inspira lentamente." : "Lascia andare lentamente."}</p></section><div className={inhale ? "breathing-orbit inhale" : "breathing-orbit exhale"}><i /><i /><i /><span className="tiny-candle"><b /><em /></span></div><div className="breath-progress">{Array.from({ length: 10 }, (_, index) => index + 1).map((item) => <i className={item <= cycle ? "done" : ""} key={item} />)}</div></div>;
+  const cycle = Math.min(5, Math.floor(elapsed / 10000) + 1);
+  const inCycle = elapsed % 10000;
+  const inhale = inCycle < 5000;
+  const seconds = Math.max(1, Math.ceil((5000 - (inCycle % 5000)) / 1000));
+  return <div className="breathing-screen"><header><button type="button" onClick={onExit}>Esci</button></header><section className="breathing-copy"><strong>{seconds} secondi</strong><span>{cycle} di 5</span><p>{inhale ? "Inspira lentamente." : "Lascia andare lentamente."}</p></section><div className={inhale ? "breathing-orbit inhale" : "breathing-orbit exhale"}><i /><i /><i /><span className="tiny-candle"><b /><em /></span></div><div className="breath-progress">{Array.from({ length: 5 }, (_, index) => index + 1).map((item) => <i className={item <= cycle ? "done" : ""} key={item} />)}</div></div>;
 }
 
 function UsernameGate({ account, busy, notice, onSave }: { account: CloudAccount; busy: boolean; notice: string; onSave: (value: string) => void | Promise<void> }) {
@@ -2873,5 +2949,5 @@ function Preferences({ theme, account, cloudStatus, busy, notice, onTheme, onGoo
 }
 
 function MobileNav({ view, onHome, onFolders, onExplore, onClasses, onCreate }: { view: View; onHome: () => void; onFolders: () => void; onExplore: () => void; onClasses: () => void; onCreate: () => void }) {
-  return <nav className="mobile-nav-new"><button className={view.name === "home" ? "active" : ""} type="button" onClick={onHome}><TablerIcon name="home-2" /><span>Spazio</span></button><button className={view.name === "folders" || view.name === "folder" ? "active" : ""} type="button" onClick={onFolders}><TablerIcon name="folder" /><span>Cartelle</span></button><button className="mobile-create" type="button" onClick={onCreate}>＋</button><button className={view.name === "explore" ? "active" : ""} type="button" onClick={onExplore}><TablerIcon name="compass" /><span>Esplora</span></button><button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={onClasses}><TablerIcon name="users-group" /><span>Classi</span></button></nav>;
+  return <nav className="mobile-nav-new" aria-label="Navigazione principale"><button className={view.name === "home" ? "active" : ""} type="button" onClick={onHome}><TablerIcon name="home-2" /><span>Spazio</span></button><button className={view.name === "folders" || view.name === "folder" ? "active" : ""} type="button" onClick={onFolders}><TablerIcon name="folder" /><span>Cartelle</span></button><button className="mobile-create" type="button" onClick={onCreate} aria-label="Crea una cartella o un set">＋</button><button className={view.name === "explore" ? "active" : ""} type="button" onClick={onExplore}><TablerIcon name="compass" /><span>Esplora</span></button><button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={onClasses}><TablerIcon name="users-group" /><span>Classi</span></button></nav>;
 }

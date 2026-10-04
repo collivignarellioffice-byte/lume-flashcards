@@ -14,7 +14,7 @@
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "firebase:deploy": "firebase deploy --only auth,firestore",
     "test": "npm run build && node --test tests/rendered-html.test.mjs && npm run build:pages",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vinext --ignore-pattern gh-pages",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vinext --ignore-pattern gh-pages --ignore-pattern HTML",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

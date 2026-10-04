@@ -48,6 +48,7 @@ export type CloudCard = {
   position?: number;
   front: string;
   back: string;
+  example?: string;
   known: number;
   missed: number;
   pinned?: boolean;
@@ -64,6 +65,7 @@ export type CloudDeck = {
   icon?: string;
   visibility: "private" | "public";
   keywordHelp: boolean;
+  examplesEnabled?: boolean;
   order: "sequential" | "random";
   direction: "front-first" | "back-first";
   cardColorMode?: "single" | "random";
@@ -202,6 +204,7 @@ function deckMeta(deck: CloudDeck) {
     icon: deck.icon,
     visibility: deck.visibility,
     keywordHelp: deck.keywordHelp,
+    examplesEnabled: deck.examplesEnabled,
     order: deck.order,
     direction: deck.direction,
     cardColorMode: deck.cardColorMode,
@@ -224,6 +227,7 @@ function publicDeckMeta(deck: CloudDeck) {
     icon: meta.icon,
     visibility: "public" as const,
     keywordHelp: meta.keywordHelp,
+    examplesEnabled: meta.examplesEnabled,
     order: meta.order,
     direction: meta.direction,
     cardColorMode: meta.cardColorMode,
@@ -353,8 +357,8 @@ export async function syncPublicLibrary(account: CloudAccount, previous: CloudDe
     const oldCards = new Map((oldDeck?.cards ?? []).map((card) => [card.id, card]));
     const newCards = new Map(deck.cards.map((card) => [card.id, card]));
     deck.cards.forEach((card, position) => {
-      const publicCard = { id: card.id, front: card.front, back: card.back, ownerId: account.uid, position };
-      const oldPublicCard = oldCards.get(card.id) ? { id: oldCards.get(card.id)?.id, front: oldCards.get(card.id)?.front, back: oldCards.get(card.id)?.back, ownerId: account.uid, position: oldCards.get(card.id)?.position ?? position } : undefined;
+      const publicCard = { id: card.id, front: card.front, back: card.back, example: card.example, ownerId: account.uid, position };
+      const oldPublicCard = oldCards.get(card.id) ? { id: oldCards.get(card.id)?.id, front: oldCards.get(card.id)?.front, back: oldCards.get(card.id)?.back, example: oldCards.get(card.id)?.example, ownerId: account.uid, position: oldCards.get(card.id)?.position ?? position } : undefined;
       if (!same(oldPublicCard, publicCard)) operations.push((batch) => batch.set(doc(db, "publicSets", idPublic, "cards", card.id), publicCard));
     });
     oldCards.forEach((_card, cardId) => {

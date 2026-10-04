@@ -1,62 +1,101 @@
 # Lume
 
-Lume è uno spazio gratuito e accogliente per creare set di flashcard, organizzarli
-in cartelle e studiare al proprio ritmo. Funziona anche senza account; con un
-accesso Google o tramite link email, set, cartelle, progressi e preferenze vengono
-sincronizzati in modo privato su Firestore.
+**A local-first flashcard workspace designed to turn rough notes into focused study sessions.**
 
-## Cosa include
+[Try the live app](https://collivignarellioffice-byte.github.io/lume-flashcards/) · [See the portfolio case study](https://martinacollivignarelli.com/#lume)
 
-- cartelle, set e flashcard senza limiti imposti dall’app;
-- colori, font ed emoji personalizzati per ogni set e per le sue carte;
-- modalità chiara e scura, con tre stili di lettura;
-- sessioni “La so / Non ancora” e ripasso dei soli errori;
-- studio di un singolo set o di un’intera cartella, in ordine o in modalità casuale;
-- set pubblici ricercabili e set privati, con sincronizzazione Firebase;
-- editor con neretto, corsivo e sottolineato e modalità Keyword Help;
-- ricerca, statistiche essenziali ed esportazione/importazione dei dati;
-- pioggia e rumore bruno generati nel browser;
-- Aria dalle Variazioni Goldberg di Bach, registrazione CC0 da Wikimedia Commons.
+![Lume home screen with the guided sample set](docs/lume-demo.png)
 
-## Avvio locale
+## The problem
 
-Serve Node.js 22.13 o successivo.
+Most flashcard tools make the user choose between speed and control. Simple tools are quick but rigid; feature-rich platforms often add setup friction before the first study session.
 
-```bash
-npm install
-npm run dev:pages
+Lume starts in the browser with a working sample set. The user can then create folders, prepare cards from Markdown, choose how a set behaves, and study without an account. Sign-in is optional and adds private synchronization across devices.
+
+## Try it in 90 seconds
+
+1. Open the [live demo](https://collivignarellioffice-byte.github.io/lume-flashcards/). No account is required.
+2. Open **Esempio · Inizia da qui**, then **Scopri Lume**.
+3. Start a study session. Tap the card or press the space bar to reveal the answer.
+4. Try **Keyword Help** and the contextual **Lato Esempio**.
+5. Mark the answer with **La so** or **Non ancora** and review the result.
+
+The sample remains private in the visitor's browser and can be edited or removed like any other set.
+
+## What I built
+
+- a local-first library of folders, sets, and flashcards;
+- study and test flows with sequential or random order and front-first or back-first direction;
+- **Keyword Help**, which temporarily keeps only selected recall anchors visible;
+- **Lato Esempio**, a third contextual side that masks the answer until it is revealed;
+- Markdown import and reusable prompts for preparing standard cards, keywords, and examples;
+- optional Google or email-link authentication with private Firestore sync;
+- a public library where signed-in users can publish and rate shared sets;
+- search, lightweight progress statistics, timers, ambient audio, themes, and responsive layouts.
+
+## Product and technical decisions
+
+| Decision | Reason |
+| --- | --- |
+| Useful before sign-in | A recruiter or new user can understand the product without registration friction. |
+| Local-first storage | Creation and study continue immediately, while an account remains optional. |
+| Guided sample as real data | Onboarding demonstrates the same objects and controls the user will later create. |
+| Separate private and public paths | Personal libraries stay isolated while published sets remain discoverable. |
+| Prompts instead of a hidden AI dependency | Users can prepare content with the model they choose, inspect the Markdown, and import a predictable format. |
+| Static GitHub Pages build | The portfolio demo is inexpensive, reproducible, and directly connected to this repository. |
+
+## Architecture
+
+```text
+Browser
+  ├─ React + TypeScript interface
+  ├─ localStorage for the guest library
+  └─ optional Firebase Authentication
+       └─ Firestore
+            ├─ private library per user
+            └─ readable public sets
+
+GitHub Actions → Vite build → GitHub Pages
 ```
 
-## Pubblicazione con GitHub Pages
+Firestore rules keep each authenticated user's private library separate. Public sets are stored through a dedicated publication path and can be read without exposing the owner's private workspace.
 
-Il progetto contiene già il workflow `.github/workflows/deploy-pages.yml`.
-Dopo averlo caricato su un repository GitHub:
+## Stack
 
-1. apri **Settings → Pages**;
-2. in **Build and deployment**, scegli **GitHub Actions**;
-3. esegui un push sul branch `main` oppure avvia manualmente il workflow.
+- React 19 and TypeScript
+- Vite and Vinext
+- Firebase Authentication and Firestore
+- CSS responsive design without a component framework
+- Node test runner
+- GitHub Actions and GitHub Pages
 
-Ogni push su `main` costruirà e pubblicherà il sito. La configurazione Firebase
-pubblica è già inclusa nel workflow; i dati personali non vengono inviati al
-repository. Senza account restano nel browser, mentre dopo l’accesso vengono
-salvati nel profilo Firestore protetto dell’utente.
+## Run locally
 
-## Firebase
-
-Il progetto usa `lume-flashcards-mcv`, database Firestore `(default)` in area
-europea `eur3`, piano Spark gratuito e protezione dall’eliminazione attiva.
-Le regole in `firestore.rules` consentono a ogni utente di leggere e modificare
-solo il proprio profilo; i set marcati come pubblici sono consultabili da tutti.
-
-Per pubblicare modifiche alle regole:
+Node.js 22.13 or later is required.
 
 ```bash
-npm run firebase:deploy
+pnpm install
+pnpm dev:pages
 ```
 
-## Comandi utili
+Then open the local URL shown by Vite.
 
-- `npm run dev:pages`: anteprima statica, uguale a GitHub Pages;
-- `npm run build:pages`: crea il sito statico in `gh-pages/`;
-- `npm run dev`: anteprima vinext;
-- `npm test`: verifica entrambe le versioni del progetto.
+Useful commands:
+
+```bash
+pnpm test           # Vinext build, source/render checks, and Pages build
+pnpm build:pages    # static output in gh-pages/
+pnpm lint
+```
+
+## Current boundaries
+
+- The app does not call an AI model directly. It provides constrained prompts and a documented Markdown format for user-controlled preparation.
+- Guest data belongs to the current browser. Cross-device sync requires sign-in.
+- Lume is a portfolio product and learning project, not a commercial learning platform with institutional administration or formal learning analytics.
+
+## My role
+
+I designed the product flows, interaction model, visual system, data model, Firebase integration, and deployment. I used AI-assisted coding as an implementation partner while keeping product decisions, acceptance criteria, testing, and iteration under my direction.
+
+Built by [Martina Collivignarelli](https://martinacollivignarelli.com/).

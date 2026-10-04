@@ -60,6 +60,7 @@ import {
   type LumeNotification,
 } from "./lume-classes";
 import { IconChoiceButton, IconPicker, normalizeLumeIcon, TablerIcon } from "./lume-icons";
+import { maskExampleAnswer, splitInlineExample } from "./lume-example";
 
 type Visibility = "private" | "public";
 type Pattern = "plain" | "lines" | "grid" | "waves" | "dots" | "botanical";
@@ -74,6 +75,7 @@ type Card = {
   id: string;
   front: string;
   back: string;
+  example?: string;
   known: number;
   missed: number;
   pinned?: boolean;
@@ -100,6 +102,7 @@ type Deck = {
   icon?: string;
   visibility: Visibility;
   keywordHelp: boolean;
+  examplesEnabled?: boolean;
   order: Order;
   direction: Direction;
   cardColorMode?: CardColorMode;
@@ -153,6 +156,7 @@ type StudyState = {
   initialCardIds: string[];
   index: number;
   flipped: boolean;
+  revealedCardIds: string[];
   mode: StudyMode | null;
   known: number;
   missed: string[];
@@ -210,6 +214,60 @@ Use one concept per block. Reorder and deduplicate the concepts, correct obvious
 My rough notes:
 [PASTE HERE]`;
 
+const exampleMarkdownPrompt = `Turn my rough study notes into a UTF-8 Markdown file named flashcards.md.
+
+Each flashcard must contain three separate parts: a front, a back, and one example sentence. Repeat this exact block for every flashcard:
+<!-- LUME_CARD -->
+term :: definition
+<!-- LUME_EXAMPLE -->
+example sentence
+
+Use one concept per block. Keep each definition accurate, clear, and concise. Put only the definition after :: and only the example sentence after the LUME_EXAMPLE marker.
+
+The example is a contextual hint, not a second definition. It must contain the exact front term or expression exactly once, used naturally, so Lume can hide that answer before the user reveals the solution. Do not include a translation, synonym, definition, spelling clue, parenthetical explanation, or any other wording that gives away the answer elsewhere in the sentence. The surrounding context may clarify how the term is used, but it must not explicitly suggest the missing word. Never replace the answer with * in the Markdown output: write the complete sentence, and Lume will mask it only before the solution is revealed. After the solution has been revealed, Lume will show the complete example.
+
+For phrases, phrasal verbs, collocations, and fixed expressions, preserve the exact expression, including important prepositions, particles, contractions, and grammatical constructions. Choose a sentence whose grammar allows the exact front expression to appear unchanged.
+
+Example output:
+<!-- LUME_CARD -->
+pitch :: A persuasive presentation of an idea, product, or project.
+<!-- LUME_EXAMPLE -->
+Martina prepared a short pitch for a new website feature.
+
+Before the solution is revealed, Lume displays: Martina prepared a short * for a new website feature.
+After the solution is revealed, Lume displays the complete sentence.
+
+Reorder and deduplicate the concepts, correct obvious mistakes, and never merge two cards. Never use :: inside a field. Keep every marker on its own line and add one blank line between blocks. Return only these blocks, with no headings, introductions, bullets, numbering, tables, explanations, or code fences.
+
+My rough notes:
+[PASTE HERE]`;
+
+const keywordExampleMarkdownPrompt = `Turn my rough study notes into a UTF-8 Markdown file named flashcards.md. Repeat this exact block for every flashcard:
+<!-- LUME_CARD -->
+term :: definition
+<!-- LUME_EXAMPLE -->
+example sentence
+
+Use one concept per block. Keep each definition accurate and concise. In each definition, wrap only its best recall anchors in **double asterisks**: 1 for a short definition, 2 for a medium one, and no more than 3 for a long one. Do not use bold merely to repeat the term.
+
+For every card, write one complete and natural example sentence after the LUME_EXAMPLE marker. The example is a contextual hint, not a second definition. It must contain the exact front term or expression exactly once, used naturally, so Lume can hide that answer before the user reveals the solution. Do not include a translation, synonym, definition, spelling clue, parenthetical explanation, or any other wording that gives away the answer elsewhere in the sentence. The surrounding context may clarify usage, but it must not explicitly suggest the missing word. Never replace the answer with * in the Markdown output: write the complete sentence, and Lume will mask it only before the solution is revealed. After the solution has been revealed, Lume will show the complete example.
+
+For phrases, phrasal verbs, collocations, and fixed expressions, preserve the exact expression unchanged, including important prepositions, particles, and contractions. Put only the definition after :: and only the example sentence after the marker. Never write “Example:” inside the definition or example field.
+
+Example output:
+<!-- LUME_CARD -->
+pitch :: A **persuasive presentation** of an idea, product, or project.
+<!-- LUME_EXAMPLE -->
+Martina prepared a short pitch for a new website feature.
+
+Before the solution is revealed, Lume displays: Martina prepared a short * for a new website feature.
+After the solution is revealed, Lume displays the complete sentence.
+
+Reorder and deduplicate the concepts, correct obvious mistakes, and never merge two cards. Never use :: inside a field. Keep every marker on its own line and add one blank line between blocks. Return only these blocks, with no headings, introductions, bullets, numbering, tables, explanations, or code fences.
+
+My rough notes:
+[PASTE HERE]`;
+
 function emptyLibrary(): CloudLibrary {
   return { folders: [], decks: [], studyDays: [], focusMinutes: 25 };
 }
@@ -236,6 +294,7 @@ function firstAccessLibrary(): CloudLibrary {
       icon: "bulb",
       visibility: "private",
       keywordHelp: true,
+      examplesEnabled: true,
       order: "sequential",
       direction: "front-first",
       cardColorMode: "single",
@@ -260,6 +319,14 @@ function firstAccessLibrary(): CloudLibrary {
           id: "lume-example-card-keywords",
           front: "Che cos’è Keyword Help?",
           back: "Tenendo premuta la barra spaziatrice restano visibili soltanto le <strong>parole chiave</strong> evidenziate in neretto.",
+          known: 0,
+          missed: 0,
+        },
+        {
+          id: "lume-example-card-context",
+          front: "Lato Esempio",
+          back: "Mostra un <strong>contesto d’uso</strong> senza rivelare subito la risposta.",
+          example: "Il Lato Esempio aiuta a ricordare una parola dentro una frase.",
           known: 0,
           missed: 0,
         },
@@ -317,7 +384,9 @@ function normalizeRichText(value: string) {
     .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
 }
 
-function parseMarkdownFlashcards(value: string) {
+type ParsedMarkdownCard = { front: string; back: string; example?: string };
+
+function parseMarkdownFlashcards(value: string): ParsedMarkdownCard[] {
   const source = value
     .replace(/^\uFEFF/, "")
     .replace(/\r\n?/g, "\n")
@@ -325,14 +394,25 @@ function parseMarkdownFlashcards(value: string) {
     .replace(/^```\s*$/gim, "")
     .trim();
 
-  const toPair = (block: string) => {
-    const compact = block.replace(/\s+/g, " ").trim();
+  const toPair = (block: string): ParsedMarkdownCard | null => {
+    const [pairBlock, ...exampleBlocks] = block.split(/<!--\s*LUME_EXAMPLE\s*-->/gi);
+    const compact = pairBlock.replace(/\s+/g, " ").trim();
     const separator = compact.indexOf("::");
     if (separator <= 0) return null;
     const front = compact.slice(0, separator).replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "").trim();
-    const back = compact.slice(separator + 2).trim();
+    let back = compact.slice(separator + 2).trim();
+    let example = exampleBlocks.join(" ").replace(/\s+/g, " ").trim();
+    if (!example) {
+      const inline = splitInlineExample(back);
+      back = inline.back;
+      example = inline.example;
+    }
     return front && back
-      ? { front: normalizeRichText(front), back: normalizeRichText(back) }
+      ? {
+          front: normalizeRichText(front),
+          back: normalizeRichText(back),
+          ...(example ? { example: normalizeRichText(example) } : {}),
+        }
       : null;
   };
 
@@ -341,14 +421,14 @@ function parseMarkdownFlashcards(value: string) {
     return source
       .split(/<!--\s*LUME_CARD\s*-->/gi)
       .map(toPair)
-      .filter((item): item is { front: string; back: string } => Boolean(item));
+      .filter((item): item is ParsedMarkdownCard => Boolean(item));
   }
 
   const lines = source.split("\n").map((line) => line.trim()).filter(Boolean);
   if (lines.length && lines.every((line) => (line.match(/::/g) ?? []).length === 1)) {
     return lines
       .map(toPair)
-      .filter((item): item is { front: string; back: string } => Boolean(item));
+      .filter((item): item is ParsedMarkdownCard => Boolean(item));
   }
 
   // Alcuni editor e LLM inseriscono ritorni a capo nel mezzo di una coppia o
@@ -381,7 +461,7 @@ function parseMarkdownFlashcards(value: string) {
         ? { front: normalizeRichText(front), back: normalizeRichText(back) }
         : null;
     })
-    .filter((item): item is { front: string; back: string } => Boolean(item));
+    .filter((item): item is ParsedMarkdownCard => Boolean(item));
 }
 
 function normalizeFolder(folder: Folder): Folder {
@@ -392,6 +472,7 @@ function normalizeDeck(deck: Deck): Deck {
   return {
     ...deck,
     icon: normalizeLumeIcon(deck.icon, "book-2"),
+    examplesEnabled: deck.examplesEnabled ?? deck.cards.some((card) => Boolean(plainText(card.example ?? ""))),
     cardColorMode: deck.cardColorMode ?? "single",
     cardColor: deck.cardColor ?? deck.color,
     votes: deck.votes ?? 0,
@@ -400,6 +481,7 @@ function normalizeDeck(deck: Deck): Deck {
       ...card,
       front: normalizeRichText(card.front),
       back: normalizeRichText(card.back),
+      example: card.example ? normalizeRichText(card.example) : undefined,
       pinComment: card.pinComment ?? "",
     })),
   };
@@ -416,6 +498,7 @@ function toCloudDeck(deck: Deck): CloudDeck {
     icon: deck.icon,
     visibility: deck.visibility,
     keywordHelp: deck.keywordHelp,
+    examplesEnabled: deck.examplesEnabled,
     order: deck.order,
     direction: deck.direction,
     cardColorMode: deck.cardColorMode,
@@ -425,6 +508,7 @@ function toCloudDeck(deck: Deck): CloudDeck {
       position,
       front: card.front,
       back: card.back,
+      example: card.example,
       known: card.known,
       missed: card.missed,
       pinned: card.pinned,
@@ -637,6 +721,7 @@ function migrateOldData(): { folders: Folder[]; decks: Deck[] } | null {
       icon: normalizeLumeIcon(deck.icon, "book-2"),
       visibility: deck.visibility === "public" ? "public" : "private",
       keywordHelp: Boolean(deck.keywordHelp),
+      examplesEnabled: Boolean(deck.examplesEnabled),
       order: deck.defaultOrder === "random" ? "random" : "sequential",
       direction: deck.defaultDirection === "back-first" ? "back-first" : "front-first",
       cardColorMode: "single",
@@ -650,6 +735,7 @@ function migrateOldData(): { folders: Folder[]; decks: Deck[] } | null {
             id: String(card.id ?? makeId("card")),
             front: String(card.front ?? ""),
             back: String(card.back ?? ""),
+            example: typeof card.example === "string" ? card.example : undefined,
             known: Number(card.known ?? 0),
             missed: Number(card.missed ?? 0),
             pinned: Boolean(card.pinned),
@@ -680,6 +766,7 @@ export default function LumeApp() {
   const [randomFlipped, setRandomFlipped] = useState(false);
   const [study, setStudy] = useState<StudyState | null>(null);
   const [showKeywords, setShowKeywords] = useState(false);
+  const [showExample, setShowExample] = useState(false);
   const [studySettingsOpen, setStudySettingsOpen] = useState(false);
   const spaceHoldTimer = useRef<number | null>(null);
   const keywordRevealTimer = useRef<number | null>(null);
@@ -746,6 +833,10 @@ export default function LumeApp() {
           setDecks(migrated.decks.map(normalizeDeck));
           setStudyDays(migrated.decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
           writeStoredLibrary(guestKey, cloudLibrarySnapshot(migrated.folders, migrated.decks.map(normalizeDeck), [], 25), false);
+        } else {
+          const firstLibrary = firstAccessLibrary();
+          applyLibrary(firstLibrary);
+          writeStoredLibrary(guestKey, firstLibrary, false);
         }
       }
       const storedTheme = localStorage.getItem(THEME_KEY);
@@ -1035,6 +1126,13 @@ export default function LumeApp() {
   const due = decks.flatMap((deck) => deck.cards).filter((card) => card.missed > card.known / 2).length;
   const studyDayStreak = consecutiveStudyDays(studyDays);
   const resumeDeck = [...decks].sort((a, b) => (b.lastStudied ?? 0) - (a.lastStudied ?? 0))[0] ?? decks[0];
+  const recentDecks = useMemo(
+    () => decks
+      .filter((deck) => typeof deck.lastStudied === "number")
+      .sort((a, b) => (b.lastStudied ?? 0) - (a.lastStudied ?? 0))
+      .slice(0, 6),
+    [decks],
+  );
   const randomCards = useMemo(
     () => decks.flatMap((deck) => deck.cards.map((card) => ({ deck, card }))),
     [decks],
@@ -1083,6 +1181,7 @@ export default function LumeApp() {
         initialCardIds: cardIds,
         index: 0,
         flipped: false,
+        revealedCardIds: [],
         mode: null,
         known: 0,
         missed: [],
@@ -1105,6 +1204,7 @@ export default function LumeApp() {
         return current.includes(today) ? current : [...current, today];
       });
       setShowKeywords(false);
+      setShowExample(false);
       setStudySettingsOpen(false);
     },
     [studyLibrary],
@@ -1117,6 +1217,7 @@ export default function LumeApp() {
       cardIds: [...current.initialCardIds],
       index: 0,
       flipped: false,
+      revealedCardIds: [],
       known: 0,
       missed: [],
       learnedIds: [],
@@ -1128,6 +1229,7 @@ export default function LumeApp() {
       complete: false,
     } : current);
     setShowKeywords(false);
+    setShowExample(false);
   }, []);
 
   const answerStudy = useCallback(
@@ -1194,6 +1296,7 @@ export default function LumeApp() {
         };
       });
       setShowKeywords(false);
+      setShowExample(false);
     },
     [study, studyEntry, account],
   );
@@ -1206,6 +1309,19 @@ export default function LumeApp() {
       return { ...current, index: nextIndex, flipped: false };
     });
     setShowKeywords(false);
+    setShowExample(false);
+  }, []);
+
+  const flipStudyCard = useCallback(() => {
+    setStudy((current) => {
+      if (!current?.mode || current.complete) return current;
+      const cardId = current.cardIds[current.index];
+      const flipped = !current.flipped;
+      const revealedCardIds = flipped && cardId && !current.revealedCardIds.includes(cardId)
+        ? [...current.revealedCardIds, cardId]
+        : current.revealedCardIds;
+      return { ...current, flipped, revealedCardIds };
+    });
   }, []);
 
   const toggleStudyPin = useCallback(() => {
@@ -1280,9 +1396,11 @@ export default function LumeApp() {
         initialCardIds: current.mode ? current.initialCardIds : nextIds,
         index: nextIndex,
         flipped: changes.direction && changes.direction !== current.direction ? false : current.flipped,
+        revealedCardIds: changes.direction && changes.direction !== current.direction ? [] : current.revealedCardIds,
       };
     });
     setShowKeywords(false);
+    setShowExample(false);
   }, [studyLibrary]);
 
   useEffect(() => {
@@ -1301,18 +1419,25 @@ export default function LumeApp() {
         event.preventDefault();
         if (event.repeat || spaceHoldTimer.current !== null) return;
         spaceLongPress.current = false;
-        if (studyEntry && extractKeywords(studyEntry.card.back).length > 0) {
+        const hasExample = Boolean(studyEntry?.deck.examplesEnabled && plainText(studyEntry.card.example ?? ""));
+        const hasKeywords = Boolean(studyEntry?.deck.keywordHelp && extractKeywords(studyEntry.card.back).length > 0);
+        if (studyEntry && (hasExample || hasKeywords)) {
           spaceHoldTimer.current = window.setTimeout(() => {
             spaceLongPress.current = true;
-            setShowKeywords(true);
+            if (hasExample) {
+              setShowKeywords(false);
+              setShowExample(true);
+            } else {
+              setShowExample(false);
+              setShowKeywords(true);
+            }
           }, 420);
         }
         return;
       }
       if (event.repeat) return;
-      if (event.key === "1") { event.preventDefault(); answerStudy(true); }
-      if (event.key === "2") { event.preventDefault(); answerStudy(false); }
-      if (event.key === "3") { event.preventDefault(); toggleStudyPin(); }
+      if (event.key === "Enter") { event.preventDefault(); answerStudy(true); }
+      if (event.key === "Backspace" || event.key === "Delete") { event.preventDefault(); answerStudy(false); }
       if (event.key === "ArrowLeft") { event.preventDefault(); moveStudy(-1); }
       if (event.key === "ArrowRight") { event.preventDefault(); moveStudy(1); }
       if (event.key === "Escape") setStudy(null);
@@ -1327,8 +1452,11 @@ export default function LumeApp() {
       }
       if (spaceLongPress.current) {
         setShowKeywords(false);
+        setShowExample(false);
+      } else if (showExample) {
+        setShowExample(false);
       } else {
-        setStudy((current) => current ? { ...current, flipped: !current.flipped } : current);
+        flipStudyCard();
       }
       spaceLongPress.current = false;
     };
@@ -1342,7 +1470,7 @@ export default function LumeApp() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [study, studyEntry, studySettingsOpen, answerStudy, moveStudy, toggleStudyPin]);
+  }, [study, studyEntry, studySettingsOpen, showExample, answerStudy, moveStudy, toggleStudyPin, flipStudyCard]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1690,9 +1818,17 @@ export default function LumeApp() {
         entry={studyEntry}
         library={studyLibrary}
         showKeywords={showKeywords}
+        showExample={showExample}
         settingsOpen={studySettingsOpen}
         onChooseMode={chooseStudyMode}
-        onFlip={() => setStudy((current) => (current ? { ...current, flipped: !current.flipped } : current))}
+        onFlip={() => {
+          if (showExample) setShowExample(false);
+          else flipStudyCard();
+        }}
+        onExample={() => {
+          setShowKeywords(false);
+          setShowExample((visible) => !visible);
+        }}
         onKnow={() => answerStudy(true)}
         onMiss={() => answerStudy(false)}
         onMove={moveStudy}
@@ -1703,6 +1839,7 @@ export default function LumeApp() {
         onSettingsChange={updateStudySettings}
         onKeywords={() => {
           if (keywordRevealTimer.current !== null) window.clearTimeout(keywordRevealTimer.current);
+          setShowExample(false);
           setShowKeywords(true);
           keywordRevealTimer.current = window.setTimeout(() => {
             setShowKeywords(false);
@@ -1712,13 +1849,16 @@ export default function LumeApp() {
         onRestartMissed={() => {
           const difficultIds = difficultStudyCardIds(study);
           if (!difficultIds.length) return;
-          setStudy({ ...study, mode: "learn", initialCardIds: difficultIds, cardIds: difficultIds, index: 0, flipped: false, known: 0, missed: [], learnedIds: [], attempts: 0, attemptsByCard: {}, missesByCard: {}, streak: 0, bestStreak: 0, complete: false });
+          setShowExample(false);
+          setStudy({ ...study, mode: "learn", initialCardIds: difficultIds, cardIds: difficultIds, index: 0, flipped: false, revealedCardIds: [], known: 0, missed: [], learnedIds: [], attempts: 0, attemptsByCard: {}, missesByCard: {}, streak: 0, bestStreak: 0, complete: false });
         }}
         onRestartAll={() => {
-          setStudy({ ...study, cardIds: [...study.initialCardIds], index: 0, flipped: false, known: 0, missed: [], learnedIds: [], attempts: 0, attemptsByCard: {}, missesByCard: {}, streak: 0, bestStreak: 0, complete: false });
+          setShowExample(false);
+          setStudy({ ...study, cardIds: [...study.initialCardIds], index: 0, flipped: false, revealedCardIds: [], known: 0, missed: [], learnedIds: [], attempts: 0, attemptsByCard: {}, missesByCard: {}, streak: 0, bestStreak: 0, complete: false });
         }}
         onExit={() => {
           setStudySettingsOpen(false);
+          setShowExample(false);
           setStudy(null);
         }}
       />
@@ -1767,6 +1907,7 @@ export default function LumeApp() {
               folders={folders}
               decks={decks}
               resumeDeck={resumeDeck}
+              recentDecks={recentDecks}
               randomEntry={randomEntry}
               randomFlipped={randomFlipped}
               mastery={mastery}
@@ -2191,6 +2332,7 @@ function Home({
   folders,
   decks,
   resumeDeck,
+  recentDecks,
   randomEntry,
   randomFlipped,
   mastery,
@@ -2211,6 +2353,7 @@ function Home({
   folders: Folder[];
   decks: Deck[];
   resumeDeck?: Deck;
+  recentDecks: Deck[];
   randomEntry: { deck: Deck; card: Card } | null;
   randomFlipped: boolean;
   mastery: number;
@@ -2256,6 +2399,37 @@ function Home({
           ) : <p className="empty-copy">Nessuna flashcard disponibile.</p>}
         </article>
       </section>
+
+      {recentDecks.length > 0 && (
+        <section className="recent-sets" aria-labelledby="recent-sets-title">
+          <div className="recent-sets-heading">
+            <h2 id="recent-sets-title">I tuoi ultimi set</h2>
+            <span>Studiati di recente</span>
+          </div>
+          <div className="recent-set-strip">
+            {recentDecks.map((deck) => {
+              const progress = Math.min(100, Math.round((deck.cards.reduce((sum, card) => sum + card.known, 0) / Math.max(1, deck.cards.length * 4)) * 100));
+              return (
+                <button
+                  className="recent-set-card"
+                  style={{ "--recent-set": deck.color, "--recent-set-text": getContrast(deck.color) } as React.CSSProperties}
+                  type="button"
+                  key={deck.id}
+                  onClick={() => onOpenDeck(deck.id)}
+                >
+                  <span className="recent-set-icon"><TablerIcon name={normalizeLumeIcon(deck.icon, "book-2")} /></span>
+                  <span className="recent-set-copy">
+                    <strong>{deck.title || "Set senza nome"}</strong>
+                    <small>{deck.cards.length} flashcard · {formatRelative(deck.lastStudied)}</small>
+                    <i className="recent-set-progress"><b style={{ width: `${progress}%` }} /></i>
+                  </span>
+                  <span className="recent-set-arrow" aria-hidden="true">›</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <section className="metrics-strip">
         <div><span>Il tuo percorso</span><strong>{studyDayStreak}</strong><small>{studyDayStreak === 1 ? "giorno consecutivo" : "giorni consecutivi"}</small></div>
@@ -2533,9 +2707,9 @@ function DeckView({ deck, folder, publicEffective, readOnly, voteBusy, onBack, o
       <button className="back-link" type="button" onClick={onBack}>← {readOnly ? "Esplora" : folder?.title ?? "Il mio spazio"}</button>
       <section className="deck-overview">
         <Notebook deck={{ ...deck, color: folder?.color ?? deck.color }} onOpen={() => undefined} />
-        <div><span>{publicEffective ? readOnly ? `Set pubblico · ${deck.ownerName || "Comunità Lume"}` : "Set pubblico" : "Set privato"}</span><h1>{deck.title || "Set senza nome"}</h1><p>{deck.description || "Domande e risposte"}</p><dl><div><dt>Flashcards</dt><dd>{deck.cards.length}</dd></div><div><dt>Ordine</dt><dd>{deck.order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{deck.direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Modalità</dt><dd>{deck.keywordHelp ? "Keyword Help" : "Ripasso normale"}</dd></div></dl><div className="deck-actions"><button className="primary-dark" type="button" onClick={onStudy}>Studia il set</button>{!readOnly && <button className="outline-button" type="button" onClick={onEdit}>Modifica</button>}</div>{publicEffective && <div className="public-vote"><span>Valuta questo set pubblico</span><button disabled={voteBusy} className={deck.userVote === -1 ? "active" : ""} type="button" onClick={() => onVote(-1)} aria-label="Non mi piace"><TablerIcon name="thumb-down" /></button><button disabled={voteBusy} className={deck.userVote === 1 ? "active" : ""} type="button" onClick={() => onVote(1)} aria-label="Mi piace"><TablerIcon name="thumb-up" /></button><button disabled={voteBusy} className={deck.userVote === 2 ? "active" : ""} type="button" onClick={() => onVote(2)} aria-label="Mi piace molto"><span className="double-thumb"><TablerIcon name="thumb-up" /><TablerIcon name="thumb-up" /></span></button><strong>{deck.votes ?? 0}</strong>{typeof deck.ratingsCount === "number" && <small>{deck.ratingsCount} valutazioni</small>}</div>} {!readOnly && <div className="deck-secondary-actions"><button type="button" disabled={!pinnedCards.length} onClick={() => setPinnedOnly((active) => !active)}>{pinnedOnly ? "Mostra tutte" : `Pin da rivedere (${pinnedCards.length})`}</button><button className="danger-link" type="button" onClick={onDelete}>Elimina set</button></div>}</div>
+        <div><span>{publicEffective ? readOnly ? `Set pubblico · ${deck.ownerName || "Comunità Lume"}` : "Set pubblico" : "Set privato"}</span><h1>{deck.title || "Set senza nome"}</h1><p>{deck.description || "Domande e risposte"}</p><dl><div><dt>Flashcards</dt><dd>{deck.cards.length}</dd></div><div><dt>Ordine</dt><dd>{deck.order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{deck.direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Esempi</dt><dd>{deck.examplesEnabled ? "Attivi" : "Disattivi"}</dd></div><div><dt>Modalità</dt><dd>{deck.keywordHelp ? "Keyword Help" : "Ripasso normale"}</dd></div></dl><div className="deck-actions"><button className="primary-dark" type="button" onClick={onStudy}>Studia il set</button>{!readOnly && <button className="outline-button" type="button" onClick={onEdit}>Modifica</button>}</div>{publicEffective && <div className="public-vote"><span>Valuta questo set pubblico</span><button disabled={voteBusy} className={deck.userVote === -1 ? "active" : ""} type="button" onClick={() => onVote(-1)} aria-label="Non mi piace"><TablerIcon name="thumb-down" /></button><button disabled={voteBusy} className={deck.userVote === 1 ? "active" : ""} type="button" onClick={() => onVote(1)} aria-label="Mi piace"><TablerIcon name="thumb-up" /></button><button disabled={voteBusy} className={deck.userVote === 2 ? "active" : ""} type="button" onClick={() => onVote(2)} aria-label="Mi piace molto"><span className="double-thumb"><TablerIcon name="thumb-up" /><TablerIcon name="thumb-up" /></span></button><strong>{deck.votes ?? 0}</strong>{typeof deck.ratingsCount === "number" && <small>{deck.ratingsCount} valutazioni</small>}</div>} {!readOnly && <div className="deck-secondary-actions"><button type="button" disabled={!pinnedCards.length} onClick={() => setPinnedOnly((active) => !active)}>{pinnedOnly ? "Mostra tutte" : `Pin da rivedere (${pinnedCards.length})`}</button><button className="danger-link" type="button" onClick={onDelete}>Elimina set</button></div>}</div>
       </section>
-      <section className="card-list"><div className="section-title"><h2>{pinnedOnly ? "Pin da rivedere" : "Le flashcards"}</h2><span>Domanda davanti · risposta dietro</span></div>{visibleCards.map((card, index) => <article key={card.id}><b>{String(index + 1).padStart(2, "0")}</b><RichText value={card.front} /><RichText value={card.back} />{card.pinned && <span className="card-list-pin">Pin · da correggere</span>}{card.pinned && card.pinComment && <p className="pin-comment">{card.pinComment}</p>}</article>)}{pinnedOnly && !visibleCards.length && <p className="empty-copy">Non hai ancora messo pin in questo set.</p>}</section>
+      <section className="card-list"><div className="section-title"><h2>{pinnedOnly ? "Pin da rivedere" : "Le flashcards"}</h2><span>{deck.examplesEnabled ? "Fronte · retro · esempio" : "Domanda davanti · risposta dietro"}</span></div>{visibleCards.map((card, index) => <article className={deck.examplesEnabled && plainText(card.example ?? "") ? "has-example" : ""} key={card.id}><b>{String(index + 1).padStart(2, "0")}</b><RichText value={card.front} /><RichText value={card.back} />{deck.examplesEnabled && plainText(card.example ?? "") && <span className="card-example-copy"><small>Esempio</small><RichText value={card.example ?? ""} /></span>}{card.pinned && <span className="card-list-pin">Pin · da correggere</span>}{card.pinned && card.pinComment && <p className="pin-comment">{card.pinComment}</p>}</article>)}{pinnedOnly && !visibleCards.length && <p className="empty-copy">Non hai ancora messo pin in questo set.</p>}</section>
     </div>
   );
 }
@@ -2592,17 +2766,74 @@ function FolderCreator({ folder, folders, defaultParentId, parentPublic, onSave,
   );
 }
 
-function LLMPromptModal({ keywordHelp, onClose, onCopied }: { keywordHelp: boolean; onClose: () => void; onCopied: (message: string) => void }) {
+type SetPreparationMode = "normal" | "example" | "keyword";
+
+function ModeInfoModal({ mode, onClose }: { mode: SetPreparationMode; onClose: () => void }) {
+  const content = mode === "normal" ? {
+    eyebrow: "Le basi",
+    title: "Modalità normale",
+    description: "Le classiche flashcard fronte e retro: prima provi a ricordare, poi giri la carta per controllare la soluzione.",
+    steps: [
+      ["Scrivi il fronte", "Inserisci la parola, la domanda o il concetto da ricordare."],
+      ["Aggiungi il retro", "Scrivi la risposta o una definizione chiara e concisa."],
+      ["Gira e verifica", "Durante lo studio, gira la carta quando sei pronta a vedere la soluzione."],
+    ],
+  } : mode === "example" ? {
+    eyebrow: "Terzo lato facoltativo",
+    title: "Lato Esempio",
+    description: "Aggiunge a ogni flashcard una frase contestuale che puoi aprire prima o dopo la soluzione, oppure ignorare del tutto.",
+    steps: [
+      ["Prima della soluzione", "Lume sostituisce la risposta con *: l’esempio contestualizza senza suggerirla."],
+      ["Dopo la soluzione", "L’esempio mostra la parola completa per confermare l’uso nel contesto."],
+      ["Sempre facoltativo", "Tieni premuta la barra spaziatrice per vederlo; su touch usa il pulsante dedicato."],
+    ],
+  } : {
+    eyebrow: "Un aiuto alla memoria",
+    title: "Keyword Help",
+    description: "Evidenzia pochi ancoraggi importanti nella risposta, così puoi richiamare il concetto senza leggere subito tutto il retro.",
+    steps: [
+      ["Scegli gli ancoraggi", "Metti in neretto da una a tre parole chiave nella definizione."],
+      ["Chiedi un indizio", "Tieni premuta la barra spaziatrice per vedere soltanto gli ancoraggi."],
+      ["Completa il richiamo", "Prova a ricostruire la risposta e poi gira la flashcard per verificarla."],
+    ],
+  };
+
+  return <div className="modal-backdrop-clean llm-prompt-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="mode-info-modal"><button className="round-close" type="button" onClick={onClose} aria-label="Chiudi">×</button><span>{content.eyebrow}</span><h2>{content.title}</h2><p>{content.description}</p><ol className="mode-onboarding-steps">{content.steps.map(([title, copy], index) => <li key={title}><i>{String(index + 1).padStart(2, "0")}</i><span><b>{title}</b><small>{copy}</small></span></li>)}</ol><button className="primary-dark mode-info-confirm" type="button" onClick={onClose}>Ho capito</button></section></div>;
+}
+
+function LLMPromptModal({ mode, examplesEnabled, onClose, onCopied }: { mode: SetPreparationMode; examplesEnabled: boolean; onClose: () => void; onCopied: (message: string) => void }) {
   const copy = async (prompt: string, label: string) => {
     await navigator.clipboard.writeText(prompt);
     onCopied(`${label} copiato negli appunti.`);
     onClose();
   };
-  return <div className="modal-backdrop-clean llm-prompt-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="llm-prompt-modal"><button className="round-close" type="button" onClick={onClose}>×</button><span>Prepara il set con un LLM</span><h2>Scegli il prompt, leggilo e poi copialo.</h2><p>Incollalo nell’LLM che preferisci insieme ai tuoi appunti. Il file risultante sarà già nel formato <code>parola :: definizione</code>.</p><div className="prompt-choice-grid"><article><h3>Prompt essenziale</h3><p>Per definizioni pulite senza indizi evidenziati.</p><pre>{markdownPrompt}</pre><button className={keywordHelp ? "outline-button" : "primary-dark"} type="button" onClick={() => { void copy(markdownPrompt, "Prompt essenziale"); }}>Copia questo prompt</button></article><article><h3>Prompt con Keyword Help</h3><p>Sceglie da 1 a massimo 3 pilastri concettuali e li prepara in neretto.</p><pre>{keywordMarkdownPrompt}</pre><button className={keywordHelp ? "primary-dark" : "outline-button"} type="button" onClick={() => { void copy(keywordMarkdownPrompt, "Prompt Keyword Help"); }}>Copia questo prompt</button></article></div><small>Alternativa manuale: attiva Keyword Help e metti in neretto le parole-chiave direttamente nell’editor.</small></section></div>;
+  const details = mode === "normal" ? {
+    eyebrow: "Prompt · Modalità normale",
+    title: "Crea flashcard fronte e retro.",
+    description: "Per definizioni pulite, senza esempi o indizi aggiuntivi.",
+    format: <>Il file userà il formato <code>termine :: definizione</code>.</>,
+    prompt: markdownPrompt,
+    copyLabel: "Prompt Modalità normale",
+  } : mode === "example" ? {
+    eyebrow: "Prompt · Lato Esempio",
+    title: "Crea anche il lato contestuale.",
+    description: "Il prompt genera fronte, retro ed esempio separati. Prima della soluzione, Lume nasconde la risposta nell’esempio con *.",
+    format: <>Il file userà i marcatori <code>LUME_CARD</code> e <code>LUME_EXAMPLE</code>.</>,
+    prompt: exampleMarkdownPrompt,
+    copyLabel: "Prompt Lato Esempio",
+  } : {
+    eyebrow: examplesEnabled ? "Prompt · Keyword Help + Esempio" : "Prompt · Keyword Help",
+    title: examplesEnabled ? "Crea keyword ed esempi insieme." : "Prepara gli indizi essenziali.",
+    description: examplesEnabled ? "Il prompt evidenzia gli ancoraggi nel retro e aggiunge un esempio che non rivela la soluzione." : "Il prompt sceglie da uno a tre ancoraggi e li prepara in neretto.",
+    format: examplesEnabled ? <>Il file includerà sia il neretto sia il marcatore <code>LUME_EXAMPLE</code>.</> : <>Il file userà <code>**doppio asterisco**</code> per le keyword.</>,
+    prompt: examplesEnabled ? keywordExampleMarkdownPrompt : keywordMarkdownPrompt,
+    copyLabel: "Prompt Keyword Help",
+  };
+  return <div className="modal-backdrop-clean llm-prompt-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="llm-prompt-modal single-mode-prompt"><button className="round-close" type="button" onClick={onClose} aria-label="Chiudi">×</button><span>{details.eyebrow}</span><h2>{details.title}</h2><p>Copialo e incollalo nell’LLM che preferisci insieme ai tuoi appunti. {details.format}</p><ol className="prompt-how-to"><li><b>1</b><span>Copia il prompt</span></li><li><b>2</b><span>Incollalo con i tuoi appunti</span></li><li><b>3</b><span>Salva il risultato come <code>flashcards.md</code> e importalo qui</span></li></ol><article className="single-prompt-card"><h3>{details.eyebrow.replace("Prompt · ", "")}</h3><p>{details.description}</p><pre>{details.prompt}</pre><button className="primary-dark" type="button" onClick={() => { void copy(details.prompt, details.copyLabel); }}>Copia questo prompt</button></article><small>Puoi anche creare o modificare le flashcard manualmente nell’editor.</small></section></div>;
 }
 
 function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSave, onClose }: { deck?: Deck; folders: Folder[]; defaultFolderId: string | null; folderPublic: (id: string | null) => boolean; theme: "light" | "dark"; onSave: (data: Omit<Deck, "id" | "createdAt">, editId?: string) => void; onClose: () => void }) {
-  type DraftPair = { id?: string; front: string; back: string; pinned?: boolean; pinComment?: string };
+  type DraftPair = { id?: string; front: string; back: string; example: string; pinned?: boolean; pinComment?: string };
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [title, setTitle] = useState(deck?.title ?? "");
   const [description, setDescription] = useState(deck?.description ?? "");
@@ -2613,15 +2844,18 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [visibility, setVisibility] = useState<Visibility>(deck?.visibility ?? "private");
   const [keywordHelp, setKeywordHelp] = useState(deck?.keywordHelp ?? false);
-  const [keywordInfoOpen, setKeywordInfoOpen] = useState(false);
-  const [promptOpen, setPromptOpen] = useState(false);
-  const [order, setOrder] = useState<Order>(deck?.order ?? "sequential");
-  const [direction, setDirection] = useState<Direction>(deck?.direction ?? "front-first");
+  const [examplesEnabled, setExamplesEnabled] = useState(deck?.examplesEnabled ?? deck?.cards.some((card) => Boolean(plainText(card.example ?? ""))) ?? false);
+  const [modeInfoOpen, setModeInfoOpen] = useState<SetPreparationMode | null>(null);
+  const [promptMode, setPromptMode] = useState<SetPreparationMode | null>(null);
+  const [order] = useState<Order>(deck?.order ?? "sequential");
+  const [direction] = useState<Direction>(deck?.direction ?? "front-first");
   const [cardColorMode, setCardColorMode] = useState<CardColorMode>(deck?.cardColorMode ?? "single");
   const [cardColor, setCardColor] = useState(deck?.cardColor ?? deck?.color ?? colors[0]);
-  const [pairs, setPairs] = useState<DraftPair[]>(deck?.cards.length ? deck.cards.map((card) => ({ id: card.id, front: card.front, back: card.back, pinned: card.pinned, pinComment: card.pinComment })) : [{ front: "", back: "" }]);
+  const [pairs, setPairs] = useState<DraftPair[]>(deck?.cards.length ? deck.cards.map((card) => ({ id: card.id, front: card.front, back: card.back, example: card.example ?? "", pinned: card.pinned, pinComment: card.pinComment })) : [{ front: "", back: "", example: "" }]);
   const [previewIndex, setPreviewIndex] = useState(0);
   const [previewBack, setPreviewBack] = useState(false);
+  const [previewRevealed, setPreviewRevealed] = useState(false);
+  const [previewExample, setPreviewExample] = useState(false);
   const [importMessage, setImportMessage] = useState("");
   const [dragImportActive, setDragImportActive] = useState(false);
   const [deletingPairKey, setDeletingPairKey] = useState<string | null>(null);
@@ -2635,6 +2869,10 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
   const previewPair = completePairs[previewIndex] ?? completePairs[0];
   const previewFirst = previewPair ? (direction === "front-first" ? previewPair.front : previewPair.back) : "";
   const previewSecond = previewPair ? (direction === "front-first" ? previewPair.back : previewPair.front) : "";
+  const previewHasExample = Boolean(examplesEnabled && plainText(previewPair?.example ?? ""));
+  const previewExampleValue = previewPair
+    ? (previewRevealed ? previewPair.example : maskExampleAnswer(previewPair.example, previewPair.front))
+    : "";
 
   useEffect(() => {
     if (!importMessage) return;
@@ -2646,6 +2884,8 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
     if (next === 3) {
       setPreviewIndex(0);
       setPreviewBack(false);
+      setPreviewRevealed(false);
+      setPreviewExample(false);
     }
     setStep(next);
   };
@@ -2658,39 +2898,41 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
     if (step !== 3 || !previewPair) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable='true']")) return;
-      if (event.code === "Space") { event.preventDefault(); setPreviewBack((value) => !value); }
-      if (event.key === "ArrowLeft") { event.preventDefault(); setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); }
-      if (event.key === "ArrowRight" || event.key === "1" || event.key === "2") { event.preventDefault(); setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); }
+      if (event.code === "Space") { event.preventDefault(); if (previewExample) setPreviewExample(false); else setPreviewBack((value) => { if (!value) setPreviewRevealed(true); return !value; }); }
+      if (event.key.toLowerCase() === "e" && previewHasExample) { event.preventDefault(); setPreviewExample((value) => !value); }
+      if (event.key === "ArrowLeft") { event.preventDefault(); setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); setPreviewRevealed(false); setPreviewExample(false); }
+      if (event.key === "ArrowRight" || event.key === "1" || event.key === "2") { event.preventDefault(); setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); setPreviewRevealed(false); setPreviewExample(false); }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [step, previewPair, completePairs.length, direction]);
+  }, [step, previewPair, previewExample, previewHasExample, completePairs.length, direction]);
 
-  const updatePair = (index: number, field: "front" | "back", value: string) => setPairs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item));
+  const updatePair = (index: number, field: "front" | "back" | "example", value: string) => setPairs((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item));
   const addPair = () => {
     const nextIndex = pairs.length;
-    setPairs((current) => [...current, { front: "", back: "" }]);
+    setPairs((current) => [...current, { front: "", back: "", example: "" }]);
     window.setTimeout(() => document.getElementById(`front-${nextIndex}`)?.focus(), 0);
   };
   const deletePair = (index: number) => {
     const pairKey = pairs[index]?.id ?? `draft-${index}`;
     setDeletingPairKey(pairKey);
     window.setTimeout(() => {
-      setPairs((current) => current.length === 1 ? [{ front: "", back: "" }] : current.filter((_, itemIndex) => itemIndex !== index));
+      setPairs((current) => current.length === 1 ? [{ front: "", back: "", example: "" }] : current.filter((_, itemIndex) => itemIndex !== index));
       setDeletingPairKey(null);
     }, 280);
   };
   const importMarkdown = async (file?: File) => {
     if (!file || !/\.md$/i.test(file.name)) { setImportMessage("Puoi importare soltanto un file .md."); return; }
-    const parsed: DraftPair[] = parseMarkdownFlashcards(await file.text());
+    const parsed: DraftPair[] = parseMarkdownFlashcards(await file.text()).map((pair) => ({ ...pair, example: pair.example ?? "" }));
     if (!parsed.length) { setImportMessage("Nessuna coppia valida. Ogni scheda deve contenere termine :: definizione."); return; }
     setPairs(parsed);
+    if (parsed.some((pair) => Boolean(plainText(pair.example)))) setExamplesEnabled(true);
     setPreviewIndex(0);
     setImportMessage(`${parsed.length} flashcard importate.`);
   };
   const submit = () => {
     const oldCards = new Map(deck?.cards.map((card) => [card.id, card]) ?? []);
-    onSave({ title: title.trim(), description: description.trim(), folderId, color: effectiveColor, pattern, icon, visibility: inheritedPublic ? "public" : visibility, keywordHelp, order, direction, cardColorMode, cardColor, lastStudied: deck?.lastStudied, cards: completePairs.map((item) => { const previous = item.id ? oldCards.get(item.id) : undefined; return { id: item.id ?? makeId("card"), front: normalizeRichText(item.front), back: normalizeRichText(item.back), known: previous?.known ?? 0, missed: previous?.missed ?? 0, pinned: item.pinned ?? previous?.pinned, pinComment: item.pinComment ?? previous?.pinComment ?? "" }; }) }, deck?.id);
+    onSave({ title: title.trim(), description: description.trim(), folderId, color: effectiveColor, pattern, icon, visibility: inheritedPublic ? "public" : visibility, keywordHelp, examplesEnabled, order, direction, cardColorMode, cardColor, lastStudied: deck?.lastStudied, cards: completePairs.map((item) => { const previous = item.id ? oldCards.get(item.id) : undefined; return { id: item.id ?? makeId("card"), front: normalizeRichText(item.front), back: normalizeRichText(item.back), example: plainText(item.example) ? normalizeRichText(item.example) : previous?.example, known: previous?.known ?? 0, missed: previous?.missed ?? 0, pinned: item.pinned ?? previous?.pinned, pinComment: item.pinComment ?? previous?.pinComment ?? "" }; }) }, deck?.id);
   };
 
   return <div className="creator-layer deck-creator" style={{ "--creator-accent": effectiveColor, "--creator-accent-text": getContrast(effectiveColor) } as React.CSSProperties}><header className="deck-creator-bar"><div className="deck-creator-brand"><strong>Lume</strong><button type="button" onClick={() => setAbandonOpen(true)}>← Esci</button></div><nav className="creator-stepper" aria-label={`Passaggio ${step} di 3`}>{([1, 2, 3] as const).map((number) => <button className={step === number ? "active" : step > number ? "complete" : ""} type="button" key={number} onClick={() => goToStep(number)}><b>{number}</b><span>{number === 1 ? "Dettagli" : number === 2 ? "Flashcards" : "Riepilogo"}</span></button>)}</nav><button className="creator-save-button" type="button" onClick={submit}>{deck ? "Salva modifiche" : "Salva il set"}</button></header><main className="deck-creator-stage">
@@ -2705,14 +2947,41 @@ function DeckCreator({ deck, folders, defaultFolderId, folderPublic, theme, onSa
         <IconChoiceButton icon={icon} color={effectiveColor} onClick={() => setIconPickerOpen(true)} />
         <fieldset className="clean-fieldset"><legend>Visibilità</legend>{inheritedPublic ? <div className="inherit-note"><strong>Pubblico tramite la cartella</strong><small>Tutto ciò che entra in questa cartella è pubblico.</small></div> : <div className="segmented"><button className={visibility === "private" ? "selected" : ""} type="button" onClick={() => setVisibility("private")}>Privato</button><button className={visibility === "public" ? "selected" : ""} type="button" onClick={() => setVisibility("public")}>Pubblico</button></div>}</fieldset>
       </section>
-      <aside className="notebook-preview-column"><span>Anteprima copertina</span><Notebook deck={{ id: "preview", folderId, title: title || "Il tuo set", description: description || "Domande e risposte", color: effectiveColor, pattern, icon, visibility, keywordHelp, order, direction, cardColorMode, cardColor, cards: completePairs.map((item, index) => ({ id: String(index), front: item.front, back: item.back, known: 0, missed: 0 })), createdAt: 0 }} onOpen={() => undefined} /></aside>
+      <aside className="notebook-preview-column"><span>Anteprima copertina</span><Notebook deck={{ id: "preview", folderId, title: title || "Il tuo set", description: description || "Domande e risposte", color: effectiveColor, pattern, icon, visibility, keywordHelp, examplesEnabled, order, direction, cardColorMode, cardColor, cards: completePairs.map((item, index) => ({ id: String(index), front: item.front, back: item.back, example: item.example, known: 0, missed: 0 })), createdAt: 0 }} onOpen={() => undefined} /></aside>
     </div>}
-    {step === 2 && <div className="card-writing-layout vertical-editor" onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragImportActive(true); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragImportActive(false); }} onDrop={(event) => { event.preventDefault(); setDragImportActive(false); void importMarkdown(event.dataTransfer.files?.[0]); }}><aside className="set-options-panel sticky-options"><div className="readonly-set-title"><span>Titolo del set</span><h2>{title}</h2></div><fieldset className="clean-fieldset"><legend>Ordine predefinito</legend><div className="segmented"><button className={order === "sequential" ? "selected" : ""} type="button" onClick={() => setOrder("sequential")}>In ordine</button><button className={order === "random" ? "selected" : ""} type="button" onClick={() => setOrder("random")}>Casuale</button></div></fieldset><fieldset className="clean-fieldset"><legend>Verso predefinito</legend><div className="segmented"><button className={direction === "front-first" ? "selected" : ""} type="button" onClick={() => setDirection("front-first")}>Fronte prima</button><button className={direction === "back-first" ? "selected" : ""} type="button" onClick={() => setDirection("back-first")}>Retro prima</button></div></fieldset><div className="keyword-option"><label className="toggle-row"><input type="checkbox" checked={keywordHelp} onChange={(event) => setKeywordHelp(event.target.checked)} /><i /><span><b>Keyword Help</b><small>Usa il neretto come indizio.</small></span></label><button className="help-dot" type="button" onClick={() => setKeywordInfoOpen((open) => !open)} aria-label="Come funziona Keyword Help">?</button></div>{keywordInfoOpen && <p className="keyword-info"><span className="hardware-only">Durante lo studio, tieni premuta la barra spaziatrice: il testo si sfoca e restano leggibili soltanto le parole messe in neretto.</span><span className="touch-only">Durante lo studio usa “Mostra keyword”: gli indizi in neretto resteranno visibili per 3 secondi.</span></p>}<button className="llm-set-button" type="button" onClick={() => setPromptOpen(true)}><span>Prepara il set con un LLM</span><small>Visualizza e copia il prompt adatto.</small></button><button className="sidebar-import-button" type="button" onClick={() => fileRef.current?.click()}>↑ Importa o trascina file .md</button><input ref={fileRef} className="sr-only" type="file" accept=".md" onChange={(event) => { void importMarkdown(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importMessage && <p className="import-status">{importMessage}</p>}<button className="delete-all-cards" type="button" onClick={() => setDeleteAllOpen(true)}>Elimina tutte le flashcards</button></aside><section className="card-editor-workspace vertical-card-workspace"><div className="editor-toolbar-title"><div><span>Flashcards</span><strong>{completePairs.length} pronte</strong></div></div><div className="card-pair-list">{pairs.map((pair, index) => <article className={(pair.id ?? `draft-${index}`) === deletingPairKey ? "card-pair-editor removing" : "card-pair-editor"} key={pair.id ?? `draft-${index}`}><header><span>Flashcard {String(index + 1).padStart(2, "0")}</span><button type="button" onClick={() => deletePair(index)} aria-label={`Elimina flashcard ${index + 1}`}>×</button></header><RichEditor id={`front-${index}`} label="Fronte" value={pair.front} placeholder="Scrivi la domanda o il concetto principale…" autoFocus={index === 0} onChange={(value) => updatePair(index, "front", value)} onTab={() => document.getElementById(`back-${index}`)?.focus()} /><RichEditor id={`back-${index}`} label="Retro" value={pair.back} placeholder="Scrivi la risposta o la spiegazione…" onChange={(value) => updatePair(index, "back", value)} onTab={() => document.getElementById("add-pair")?.focus()} /></article>)}</div><button id="add-pair" className="add-pair" type="button" onClick={addPair}>＋ Aggiungi un’altra coppia</button></section>{dragImportActive && <div className="md-drop-overlay"><div><strong>Rilascia qui il file .md</strong><span>Le flashcards verranno importate automaticamente.</span></div></div>}</div>}
+    {step === 2 && <div className="card-writing-layout vertical-editor" onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) { event.preventDefault(); setDragImportActive(true); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragImportActive(false); }} onDrop={(event) => { event.preventDefault(); setDragImportActive(false); void importMarkdown(event.dataTransfer.files?.[0]); }}>
+      <aside className="set-options-panel sticky-options">
+        <div className="readonly-set-title"><span>Titolo del set</span><h2>{title}</h2></div>
+        <section className="set-mode-options" aria-label="Modalità delle flashcard"><header><span>Modalità del set</span><small>Scopri ogni modalità o copia il suo prompt.</small></header><article className="set-mode-row base-mode enabled"><span className="mode-base-mark" aria-hidden="true">2</span><span className="mode-copy"><b>Modalità normale</b><small>Le classiche flashcard fronte e retro.</small></span><span className="mode-actions"><button className="help-dot" type="button" onClick={() => setModeInfoOpen("normal")} aria-label="Come funziona la Modalità normale">?</button><button className="mode-prompt-button" type="button" onClick={() => setPromptMode("normal")}>Prompt</button></span></article><article className={examplesEnabled ? "set-mode-row enabled" : "set-mode-row"}><label className="mode-switch" aria-label="Attiva Lato Esempio"><input type="checkbox" checked={examplesEnabled} onChange={(event) => setExamplesEnabled(event.target.checked)} /><i /></label><span className="mode-copy"><b>Lato Esempio</b><small>Un terzo lato contestuale, senza suggerire la soluzione.</small></span><span className="mode-actions"><button className="help-dot" type="button" onClick={() => setModeInfoOpen("example")} aria-label="Come funziona Lato Esempio">?</button><button className="mode-prompt-button" type="button" onClick={() => setPromptMode("example")}>Prompt</button></span></article><article className={keywordHelp ? "set-mode-row enabled" : "set-mode-row"}><label className="mode-switch" aria-label="Attiva Keyword Help"><input type="checkbox" checked={keywordHelp} onChange={(event) => setKeywordHelp(event.target.checked)} /><i /></label><span className="mode-copy"><b>Keyword Help</b><small>Parole chiave in neretto come indizio.</small></span><span className="mode-actions"><button className="help-dot" type="button" onClick={() => setModeInfoOpen("keyword")} aria-label="Come funziona Keyword Help">?</button><button className="mode-prompt-button" type="button" onClick={() => setPromptMode("keyword")}>Prompt</button></span></article></section>
+        <button className="sidebar-import-button" type="button" onClick={() => fileRef.current?.click()}>↑ Importa o trascina file .md</button>
+        <input ref={fileRef} className="sr-only" type="file" accept=".md" onChange={(event) => { void importMarkdown(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+        {importMessage && <p className="import-status">{importMessage}</p>}
+        <button className="delete-all-cards" type="button" onClick={() => setDeleteAllOpen(true)}>Elimina tutte le flashcards</button>
+      </aside>
+      <section className="card-editor-workspace vertical-card-workspace">
+        <div className="editor-toolbar-title"><div><span>Flashcards</span><strong>{completePairs.length} pronte</strong></div></div>
+        <div className="card-pair-list">{pairs.map((pair, index) => <article className={(pair.id ?? `draft-${index}`) === deletingPairKey ? "card-pair-editor removing" : "card-pair-editor"} key={pair.id ?? `draft-${index}`}>
+          <header><span>Flashcard {String(index + 1).padStart(2, "0")}</span><button type="button" onClick={() => deletePair(index)} aria-label={`Elimina flashcard ${index + 1}`}>×</button></header>
+          <RichEditor id={`front-${index}`} label="Fronte" value={pair.front} placeholder="Scrivi la domanda o il concetto principale…" autoFocus={index === 0} onChange={(value) => updatePair(index, "front", value)} onTab={() => document.getElementById(`back-${index}`)?.focus()} />
+          <RichEditor id={`back-${index}`} label="Retro" value={pair.back} placeholder="Scrivi la risposta o la spiegazione…" onChange={(value) => updatePair(index, "back", value)} onTab={() => document.getElementById(examplesEnabled ? `example-${index}` : "add-pair")?.focus()} />
+          {examplesEnabled && <RichEditor id={`example-${index}`} label="Esempio" value={pair.example} placeholder="Scrivi la frase completa: Lume nasconderà la risposta prima della soluzione…" onChange={(value) => updatePair(index, "example", value)} onTab={() => document.getElementById("add-pair")?.focus()} />}
+        </article>)}</div>
+        <button id="add-pair" className="add-pair" type="button" onClick={addPair}>＋ Aggiungi un’altra flashcard</button>
+      </section>
+      {dragImportActive && <div className="md-drop-overlay"><div><strong>Rilascia qui il file .md</strong><span>Le flashcards verranno importate automaticamente.</span></div></div>}
+    </div>}
     {step === 3 && <div className="summary-layout refined-summary">
-      <aside className="summary-data"><span>Riepilogo</span><h2>{title || "Set senza nome"}</h2><dl><div><dt>Flashcards</dt><dd>{completePairs.length}</dd></div><div><dt>Ordine</dt><dd>{order === "random" ? "Casuale" : "In ordine"}</dd></div><div><dt>Verso</dt><dd>{direction === "front-first" ? "Fronte → retro" : "Retro → fronte"}</dd></div><div><dt>Keyword Help</dt><dd>{keywordHelp ? "Attivo" : "Disattivo"}</dd></div></dl><fieldset className="clean-fieldset"><legend>Colore delle flashcards</legend><div className="segmented"><button className={cardColorMode === "single" ? "selected" : ""} type="button" onClick={() => setCardColorMode("single")}>Colore fisso</button><button className={cardColorMode === "random" ? "selected" : ""} type="button" onClick={() => setCardColorMode("random")}>Casuale a ogni studio</button></div>{cardColorMode === "single" && <div className="color-palette compact">{cardColors.map((option) => <button className={cardColor === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => setCardColor(option)} aria-label={`Colore flashcard ${option}`} />)}</div>}</fieldset></aside>
-      <section className="study-simulation"><h1>Prova il tuo set.</h1>{previewPair ? <><div className="summary-card-wrap"><button key={previewIndex} className={previewBack ? "simulation-card flipped" : "simulation-card"} type="button" onClick={() => setPreviewBack((back) => !back)}><span className="simulation-card-inner"><span className="simulation-face simulation-front" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.46) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.86) }}><small>{direction === "front-first" ? "Fronte" : "Retro"}</small><RichText value={previewFirst} /><em><span className="hardware-only">Clicca per girare</span><span className="touch-only">Tocca per girare</span></em></span><span className="simulation-face simulation-back" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.3) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.72) }}><small>{direction === "front-first" ? "Retro" : "Fronte"}</small><RichText value={previewSecond} /><em><span className="hardware-only">Clicca per girare</span><span className="touch-only">Tocca per girare</span></em></span></span></button></div><div className="simulation-controls"><button type="button" disabled={previewIndex === 0} onClick={() => { setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); }}>←</button><span>{previewIndex + 1} di {completePairs.length}</span><button type="button" disabled={previewIndex >= completePairs.length - 1} onClick={() => { setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); }}>→</button></div></> : <div className="empty-summary-preview"><strong>Il set è ancora vuoto.</strong><p>Puoi salvarlo adesso e aggiungere le flashcards in un secondo momento.</p></div>}</section>
+      <aside className="summary-data"><span>Riepilogo</span><h2>{title || "Set senza nome"}</h2><dl><div><dt>Flashcards</dt><dd>{completePairs.length}</dd></div><div><dt>Esempi</dt><dd>{examplesEnabled ? "Attivi" : "Disattivi"}</dd></div><div><dt>Keyword Help</dt><dd>{keywordHelp ? "Attivo" : "Disattivo"}</dd></div></dl><fieldset className="clean-fieldset"><legend>Colore delle flashcards</legend><div className="segmented"><button className={cardColorMode === "single" ? "selected" : ""} type="button" onClick={() => setCardColorMode("single")}>Colore fisso</button><button className={cardColorMode === "random" ? "selected" : ""} type="button" onClick={() => setCardColorMode("random")}>Casuale a ogni studio</button></div>{cardColorMode === "single" && <div className="color-palette compact">{cardColors.map((option) => <button className={cardColor === option ? "selected" : ""} style={{ background: option }} key={option} type="button" onClick={() => setCardColor(option)} aria-label={`Colore flashcard ${option}`} />)}</div>}</fieldset></aside>
+      <section className="study-simulation"><h1>Prova il tuo set.</h1>{previewPair ? <>
+        <div className="summary-card-wrap"><button key={previewIndex} className={`simulation-card${previewBack ? " flipped" : ""}${previewExample ? " example-visible" : ""}`} type="button" onClick={() => { if (previewExample) setPreviewExample(false); else setPreviewBack((back) => { if (!back) setPreviewRevealed(true); return !back; }); }} aria-label={previewExample ? "Nascondi esempio" : "Gira la flashcard"}>
+          <span className="simulation-card-inner"><span className="simulation-face simulation-front" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.46) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.86) }}><small>{direction === "front-first" ? "Fronte" : "Retro"}</small><RichText value={previewFirst} /><em><span className="hardware-only">Clicca per girare</span><span className="touch-only">Tocca per girare</span></em></span><span className="simulation-face simulation-back" style={{ background: theme === "dark" ? darken(cardColorMode === "single" ? cardColor : effectiveColor, 0.3) : tint(cardColorMode === "single" ? cardColor : effectiveColor, 0.72) }}><small>{direction === "front-first" ? "Retro" : "Fronte"}</small><RichText value={previewSecond} /><em><span className="hardware-only">Clicca per girare</span><span className="touch-only">Tocca per girare</span></em></span></span>
+          {previewHasExample && <span className="simulation-face simulation-example" style={{ background: `color-mix(in srgb, ${cardColorMode === "single" ? cardColor : effectiveColor} 25%, ${theme === "dark" ? "#2b2535" : "#f3e4be"})` }}><small>{previewRevealed ? "Esempio" : "Esempio · risposta nascosta"}</small><RichText value={previewExampleValue} /><em>Premi E per tornare</em></span>}
+        </button></div>
+        {previewHasExample && <button className={previewExample ? "simulation-example-button active" : "simulation-example-button"} type="button" onClick={() => setPreviewExample((value) => !value)}>{previewExample ? "Nascondi esempio" : "Mostra esempio"}</button>}
+        <div className="simulation-controls"><button type="button" disabled={previewIndex === 0} onClick={() => { setPreviewIndex((index) => Math.max(0, index - 1)); setPreviewBack(false); setPreviewRevealed(false); setPreviewExample(false); }}>←</button><span>{previewIndex + 1} di {completePairs.length}</span><button type="button" disabled={previewIndex >= completePairs.length - 1} onClick={() => { setPreviewIndex((index) => Math.min(completePairs.length - 1, index + 1)); setPreviewBack(false); setPreviewRevealed(false); setPreviewExample(false); }}>→</button></div>
+      </> : <div className="empty-summary-preview"><strong>Il set è ancora vuoto.</strong><p>Puoi salvarlo adesso e aggiungere le flashcards in un secondo momento.</p></div>}</section>
     </div>}
-  </main>{iconPickerOpen && <IconPicker selected={icon} color={effectiveColor} kind="deck" onSelect={setIcon} onClose={() => setIconPickerOpen(false)} />}{promptOpen && <LLMPromptModal keywordHelp={keywordHelp} onClose={() => setPromptOpen(false)} onCopied={setImportMessage} />}{deleteAllOpen && <DeleteCardsConfirmModal count={pairs.filter((pair) => plainText(pair.front) || plainText(pair.back)).length} onClose={() => setDeleteAllOpen(false)} onConfirm={() => { setPairs([{ front: "", back: "" }]); setDeleteAllOpen(false); }} />}{abandonOpen && <AbandonCreatorModal onClose={() => setAbandonOpen(false)} onConfirm={onClose} />}</div>;
+  </main>{iconPickerOpen && <IconPicker selected={icon} color={effectiveColor} kind="deck" onSelect={setIcon} onClose={() => setIconPickerOpen(false)} />}{modeInfoOpen && <ModeInfoModal mode={modeInfoOpen} onClose={() => setModeInfoOpen(null)} />}{promptMode && <LLMPromptModal mode={promptMode} examplesEnabled={examplesEnabled} onClose={() => setPromptMode(null)} onCopied={setImportMessage} />}{deleteAllOpen && <DeleteCardsConfirmModal count={pairs.filter((pair) => plainText(pair.front) || plainText(pair.back)).length} onClose={() => setDeleteAllOpen(false)} onConfirm={() => { setPairs([{ front: "", back: "", example: "" }]); setDeleteAllOpen(false); }} />}{abandonOpen && <AbandonCreatorModal onClose={() => setAbandonOpen(false)} onConfirm={onClose} />}</div>;
 }
 
 function AbandonCreatorModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: () => void }) {
@@ -2774,7 +3043,7 @@ function difficultStudyCardIds(state: StudyState) {
     .sort((a, b) => studyDifficultyScore(state, b) - studyDifficultyScore(state, a));
 }
 
-function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen, onFlip, onKnow, onMiss, onMove, onPin, onPinComment, onOpenSettings, onCloseSettings, onSettingsChange, onKeywords, onChooseMode, onRestartMissed, onRestartAll, onExit }: { theme: "light" | "dark"; state: StudyState; entry: { deck: Deck; card: Card } | null; library: Deck[]; showKeywords: boolean; settingsOpen: boolean; onFlip: () => void; onKnow: () => void; onMiss: () => void; onMove: (delta: -1 | 1) => void; onPin: () => void; onPinComment: (value: string) => void; onOpenSettings: () => void; onCloseSettings: () => void; onSettingsChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onKeywords: () => void; onChooseMode: (mode: StudyMode) => void; onRestartMissed: () => void; onRestartAll: () => void; onExit: () => void }) {
+function StudyScreen({ theme, state, entry, library, showKeywords, showExample, settingsOpen, onFlip, onExample, onKnow, onMiss, onMove, onPin, onPinComment, onOpenSettings, onCloseSettings, onSettingsChange, onKeywords, onChooseMode, onRestartMissed, onRestartAll, onExit }: { theme: "light" | "dark"; state: StudyState; entry: { deck: Deck; card: Card } | null; library: Deck[]; showKeywords: boolean; showExample: boolean; settingsOpen: boolean; onFlip: () => void; onExample: () => void; onKnow: () => void; onMiss: () => void; onMove: (delta: -1 | 1) => void; onPin: () => void; onPinComment: (value: string) => void; onOpenSettings: () => void; onCloseSettings: () => void; onSettingsChange: (changes: Partial<Pick<StudyState, "font" | "order" | "direction">>) => void; onKeywords: () => void; onChooseMode: (mode: StudyMode) => void; onRestartMissed: () => void; onRestartAll: () => void; onExit: () => void }) {
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const swipeHandled = useRef(false);
   const firstDeck = library.find((deck) => state.deckIds.includes(deck.id));
@@ -2805,16 +3074,12 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
           <p>Scegli il ritmo più adatto a questo ripasso. Potrai sempre cambiare modalità alla prossima sessione.</p>
           <div className="study-mode-grid">
             <button className="study-mode-card learn" type="button" onClick={() => onChooseMode("learn")}>
-              <span>01 · Impara</span>
-              <strong>Ripeti finché resta.</strong>
+              <strong>Studio</strong>
               <p>Se non sai una carta, ricompare dopo 3 altre carte. Finisci solo quando le hai ricordate tutte.</p>
-              <em>Memorizzazione attiva →</em>
             </button>
             <button className="study-mode-card test" type="button" onClick={() => onChooseMode("test")}>
-              <span>02 · Test</span>
-              <strong>Una risposta, poi il risultato.</strong>
+              <strong>Test</strong>
               <p>Ogni carta appare una volta. Alla fine trovi il punteggio, gli errori e le carte da ripassare.</p>
-              <em>Verifica finale →</em>
             </button>
           </div>
         </main>
@@ -2829,7 +3094,7 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
       <div className="study-screen complete study-results" style={{ "--study": baseColor } as React.CSSProperties}>
         <button className="study-exit" type="button" onClick={onExit} aria-label="Esci dallo studio"><TablerIcon name="x" /></button>
         <section>
-          <span>{isTest ? "Test completato" : "Sessione Impara completata"}</span>
+          <span>{isTest ? "Test completato" : "Sessione di studio completata"}</span>
           {isTest ? <><strong className="study-score">{testScore}%</strong><h1>{state.learnedIds.length} risposte corrette su {totalCards}.</h1></> : <h1>Hai imparato tutte le {totalCards} carte.</h1>}
           <div className="study-result-metrics">
             <article><span>{isTest ? "Corrette" : "Tentativi"}</span><strong>{isTest ? state.learnedIds.length : state.attempts}</strong></article>
@@ -2848,12 +3113,18 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
   }
 
   if (!entry) return null;
-  const keywords = extractKeywords(entry.card.back);
+  const keywords = entry.deck.keywordHelp ? extractKeywords(entry.card.back) : [];
   const firstValue = state.direction === "front-first" ? entry.card.front : entry.card.back;
   const secondValue = state.direction === "front-first" ? entry.card.back : entry.card.front;
+  const hasExample = Boolean(entry.deck.examplesEnabled && plainText(entry.card.example ?? ""));
+  const solutionRevealed = state.revealedCardIds.includes(entry.card.id);
+  const exampleValue = solutionRevealed
+    ? entry.card.example ?? ""
+    : maskExampleAnswer(entry.card.example ?? "", entry.card.front);
   const cardColor = theme === "dark" ? darken(baseColor, 0.46) : tint(baseColor, 0.84);
   const secondColor = theme === "dark" ? darken(baseColor, 0.30) : tint(baseColor, 0.72);
-  const modeLabel = state.mode === "learn" ? "Impara" : "Test";
+  const exampleColor = `color-mix(in srgb, ${baseColor} 25%, ${theme === "dark" ? "#2b2535" : "#f3e4be"})`;
+  const modeLabel = state.mode === "learn" ? "Studio" : "Test";
   const progressPercent = Math.min(100, Math.round(((state.index + 1) / Math.max(1, state.cardIds.length)) * 100));
   const startSwipe = (event: React.TouchEvent<HTMLButtonElement>) => {
     const touch = event.touches[0];
@@ -2873,12 +3144,12 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
     onMove(deltaX < 0 ? 1 : -1);
   };
   return (
-    <div className="study-screen" style={{ "--study": baseColor, "--study-soft": cardColor, "--study-back": secondColor, "--study-font": studyFontStack(state.font) } as React.CSSProperties}>
+    <div className="study-screen" style={{ "--study": baseColor, "--study-soft": cardColor, "--study-back": secondColor, "--study-example": exampleColor, "--study-font": studyFontStack(state.font) } as React.CSSProperties}>
       <header><button className="study-exit" type="button" onClick={onExit} aria-label="Esci dallo studio"><TablerIcon name="x" /></button><div><strong>{entry.deck.title || "Set senza nome"}</strong><span>{modeLabel}</span><small className="study-progress-percent">{progressPercent}%</small></div><div className="study-session-meta"><span>{state.streak} streak</span><span>{state.mode === "learn" ? `${state.learnedIds.length} imparate · ${difficultIds.length} difficili` : `${state.attempts} risposte · ${difficultIds.length} errori`}</span><button className={entry.card.pinned ? "pin-button pinned" : "pin-button"} type="button" onClick={onPin} aria-label={entry.card.pinned ? "Rimuovi pin dalla flashcard" : "Metti un pin alla flashcard"}><TablerIcon name="pin" /><span>{entry.card.pinned ? "Con pin" : "Pin"}</span></button><button className="study-settings-button" type="button" onClick={onOpenSettings} aria-label="Impostazioni di studio"><TablerIcon name="adjustments-horizontal" /><span>Impostazioni</span></button></div></header>
       <main>
         <button
           key={`${entry.card.id}-${state.index}`}
-          className={state.flipped ? "study-card flipped" : "study-card"}
+          className={`study-card${state.flipped ? " flipped" : ""}${showExample && hasExample ? " example-visible" : ""}`}
           type="button"
           onClick={() => {
             if (swipeHandled.current) {
@@ -2889,7 +3160,7 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
           }}
           onTouchStart={startSwipe}
           onTouchEnd={finishSwipe}
-          aria-label={`Flashcard ${state.index + 1} di ${state.cardIds.length}. Attiva per girarla.`}
+          aria-label={showExample && hasExample ? `Esempio della flashcard ${state.index + 1}. Attiva per tornare al lato precedente.` : `Flashcard ${state.index + 1} di ${state.cardIds.length}. Attiva per girarla.`}
         >
           <span className="study-card-inner">
             <span className="study-face study-front" style={{ "--card-font-size": studyTextSize(firstValue) } as React.CSSProperties}>
@@ -2905,6 +3176,12 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
               {entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}
             </span>
           </span>
+          {hasExample && <span className="study-face study-example" style={{ "--card-font-size": studyTextSize(exampleValue) } as React.CSSProperties}>
+            <small>{solutionRevealed ? "Esempio" : "Esempio · risposta nascosta"}</small>
+            <RichText value={exampleValue} />
+            <em className="hardware-only">Spazio per tornare</em>
+            {entry.card.pinned && <i className="card-pin-indicator">Da rivedere</i>}
+          </span>}
           {showKeywords && keywords.length > 0 && (
             <span className="keyword-overlay" style={{ "--keyword-font-size": studyTextSize(entry.card.back) } as React.CSSProperties}>
               <small>Keywords</small>
@@ -2917,11 +3194,14 @@ function StudyScreen({ theme, state, entry, library, showKeywords, settingsOpen,
         {entry.card.pinned && <label className="study-pin-note"><span>Nota per la revisione</span><input value={entry.card.pinComment ?? ""} onChange={(event) => onPinComment(event.target.value)} placeholder="Es. controllare la definizione o correggere un errore…" /></label>}
         <div className="study-sequence-note"><strong>{state.mode === "learn" ? `${state.learnedIds.length}/${totalCards} imparate` : `${state.attempts}/${totalCards} risposte`}</strong></div>
         <div className="study-actions">
-          <button className="study-answer-icon miss" type="button" onClick={onMiss} aria-label="Non la so" title="Non la so"><TablerIcon name="x" /><b className="hardware-only">2</b></button>
-          <button className="study-answer-icon know" type="button" onClick={onKnow} aria-label="La so" title="La so"><TablerIcon name="check" /><b className="hardware-only">1</b></button>
+          <button className="study-answer-icon miss" type="button" onClick={onMiss} aria-label="Non la so" title="Non la so"><TablerIcon name="x" /><b className="hardware-only">⌫</b></button>
+          <button className="study-answer-icon know" type="button" onClick={onKnow} aria-label="La so" title="La so"><TablerIcon name="check" /><b className="hardware-only">↵</b></button>
         </div>
-        {keywords.length > 0 && <button className={showKeywords ? "keyword-button active" : "keyword-button"} type="button" onClick={onKeywords} aria-pressed={showKeywords}><span className="hardware-only">Tieni premuta la barra spaziatrice · Mostra keywords</span><span className="touch-only">{showKeywords ? "Keywords visibili" : "Mostra keyword"}</span></button>}
-        <p className="study-shortcuts hardware-only">Spazio gira · 1 La so · 2 Non la so · 3 Pin</p>
+        {(hasExample || keywords.length > 0) && <div className="study-help-actions">
+          {hasExample && <button className={showExample ? "example-button active" : "example-button"} type="button" onClick={onExample} aria-pressed={showExample}><span className="hardware-only">Tieni premuta la barra spaziatrice · Mostra esempio</span><span className="touch-only">{showExample ? "Nascondi esempio" : "Mostra esempio"}</span></button>}
+          {keywords.length > 0 && <button className={showKeywords ? "keyword-button active" : "keyword-button"} type="button" onClick={onKeywords} aria-pressed={showKeywords}><span className="hardware-only">Tieni premuta la barra spaziatrice · Mostra keywords</span><span className="touch-only">{showKeywords ? "Keywords visibili" : "Mostra keyword"}</span></button>}
+        </div>}
+        <p className="study-shortcuts hardware-only">Spazio gira · Invio La so · Cancella Non la so{hasExample || keywords.length > 0 ? ` · Spazio premuto ${hasExample ? "esempio" : "indizio"}` : ""}</p>
       </main>
       {settingsOpen && <StudySettings state={state} onChange={onSettingsChange} onClose={onCloseSettings} />}
     </div>

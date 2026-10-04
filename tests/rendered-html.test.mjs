@@ -53,7 +53,7 @@ test("renders the Lume application shell", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });
 
-test("keeps each account library separate and seeds one private example", async () => {
+test("keeps each account library separate and seeds a private first-use example", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const cloud = await readFile(new URL("../app/lume-cloud.ts", import.meta.url), "utf8");
 
@@ -64,5 +64,52 @@ test("keeps each account library separate and seeds one private example", async 
   assert.match(page, /Esempio · Inizia da qui/);
   assert.match(page, /title: "Scopri Lume"/);
   assert.match(page, /visibility: "private"/);
+  assert.match(page, /front: "Lato Esempio"/);
+  assert.match(page, /writeStoredLibrary\(guestKey, firstLibrary, false\)/);
   assert.match(cloud, /libraryInitialized: true/);
+});
+
+test("supports optional example sides without breaking legacy markdown cards", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const cloud = await readFile(new URL("../app/lume-cloud.ts", import.meta.url), "utf8");
+
+  assert.match(page, /LUME_EXAMPLE/);
+  assert.match(page, /examplesEnabled/);
+  assert.match(page, /Mostra esempio/);
+  assert.match(page, /maskExampleAnswer/);
+  assert.match(page, /revealedCardIds/);
+  assert.match(page, /exact front term or expression exactly once/);
+  assert.match(page, /splitInlineExample/);
+  assert.match(page, /term :: definition/);
+  assert.match(cloud, /example\?: string/);
+  assert.match(cloud, /examplesEnabled\?: boolean/);
+});
+
+test("presents each study mode with onboarding and its own prompt", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /Modalità del set/);
+  assert.match(page, /Modalità normale/);
+  assert.match(page, /Le classiche flashcard fronte e retro/);
+  assert.match(page, /Come funziona Lato Esempio/);
+  assert.match(page, /Come funziona Keyword Help/);
+  assert.match(page, /Prompt · Lato Esempio/);
+  assert.match(page, /Copia questo prompt/);
+  assert.match(page, /Salva il risultato come/);
+  assert.doesNotMatch(page, /Prepara il set con un LLM/);
+});
+
+test("keeps session preferences out of set creation and uses the new study controls", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.doesNotMatch(page, /Ordine predefinito|Verso predefinito/);
+  assert.match(page, /Ordine delle carte/);
+  assert.match(page, /Lato mostrato per primo/);
+  assert.match(page, /<strong>Studio<\/strong>/);
+  assert.match(page, /<strong>Test<\/strong>/);
+  assert.doesNotMatch(page, /01 · Impara|Ripeti finché resta|Una risposta, poi il risultato|Memorizzazione attiva|Verifica finale/);
+  assert.match(page, /event\.key === "Enter"/);
+  assert.match(page, /event\.key === "Backspace" \|\| event\.key === "Delete"/);
+  assert.match(page, /Spazio gira · Invio La so · Cancella Non la so/);
+  assert.match(page, /Spazio premuto/);
 });

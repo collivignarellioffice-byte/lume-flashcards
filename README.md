@@ -29,7 +29,7 @@ The sample remains private in the visitor's browser and can be edited or removed
 - **Keyword Help**, which temporarily keeps only selected recall anchors visible;
 - **Lato Esempio**, a third contextual side that masks the answer until it is revealed;
 - Markdown import and reusable prompts for preparing standard cards, keywords, and examples;
-- optional Google or email-link authentication with private Firestore sync;
+- optional Google or email/password authentication with private Firestore sync;
 - a public library where signed-in users can publish and rate shared sets;
 - search, lightweight progress statistics, timers, ambient audio, themes, and responsive layouts.
 
@@ -98,4 +98,4 @@ pnpm lint
 
 I designed the product flows, interaction model, visual system, data model, Firebase integration, and deployment. I used AI-assisted coding as an implementation partner while keeping product decisions, acceptance criteria, testing, and iteration under my direction.
 
-Built by [Martina Collivignarelli](https://martinacollivignarelli.com/).
+Built by [Martina Colli Vignarelli](https://martinacollivignarelli.com/).

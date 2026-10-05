@@ -65,7 +65,9 @@ test("keeps each account library separate and seeds a private first-use example"
   assert.match(page, /title: "Scopri Lume"/);
   assert.match(page, /visibility: "private"/);
   assert.match(page, /front: "Lato Esempio"/);
-  assert.match(page, /writeStoredLibrary\(guestKey, firstLibrary, false\)/);
+  assert.match(page, /writeStoredLibrary\(guestKey, initialLibrary, false\)/);
+  assert.match(page, /lume-first-access-seeded-v1/);
+  assert.match(page, /!sampleWasSeeded && !libraryHasContent\(recoveredLibrary\)/);
   assert.match(cloud, /libraryInitialized: true/);
 });
 

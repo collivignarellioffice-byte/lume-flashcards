@@ -178,6 +178,7 @@ const LEARN_REVIEW_GAP = 3;
 const LEGACY_STORE_KEY = "lume-clean-v2";
 const STORE_PREFIX = "lume-library-v3";
 const THEME_KEY = "lume-clean-theme";
+const FIRST_ACCESS_SEEDED_KEY = "lume-first-access-seeded-v1";
 
 function libraryStoreKey(uid: string | null) {
   return `${STORE_PREFIX}:${uid ?? "guest"}`;
@@ -270,6 +271,10 @@ My rough notes:
 
 function emptyLibrary(): CloudLibrary {
   return { folders: [], decks: [], studyDays: [], focusMinutes: 25 };
+}
+
+function libraryHasContent(library: CloudLibrary | null) {
+  return Boolean(library && (library.folders.length > 0 || library.decks.length > 0));
 }
 
 function firstAccessLibrary(): CloudLibrary {
@@ -823,22 +828,24 @@ export default function LumeApp() {
       const guestLibrary = readStoredLibrary(guestKey);
       const legacyLibrary = guestLibrary ? null : readStoredLibrary(LEGACY_STORE_KEY);
       const stored = guestLibrary ?? legacyLibrary;
-      if (stored) {
-        applyLibrary(stored);
-        if (legacyLibrary) writeStoredLibrary(guestKey, legacyLibrary, false);
-      } else {
-        const migrated = migrateOldData();
-        if (migrated) {
-          setFolders(migrated.folders);
-          setDecks(migrated.decks.map(normalizeDeck));
-          setStudyDays(migrated.decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []));
-          writeStoredLibrary(guestKey, cloudLibrarySnapshot(migrated.folders, migrated.decks.map(normalizeDeck), [], 25), false);
-        } else {
-          const firstLibrary = firstAccessLibrary();
-          applyLibrary(firstLibrary);
-          writeStoredLibrary(guestKey, firstLibrary, false);
-        }
-      }
+      const migrated = stored ? null : migrateOldData();
+      const migratedLibrary = migrated
+        ? cloudLibrarySnapshot(
+            migrated.folders,
+            migrated.decks.map(normalizeDeck),
+            migrated.decks.flatMap((deck) => deck.lastStudied ? [localDayKey(deck.lastStudied)] : []),
+            25,
+          )
+        : null;
+      const recoveredLibrary = stored ?? migratedLibrary;
+      const sampleWasSeeded = localStorage.getItem(FIRST_ACCESS_SEEDED_KEY) === "true";
+      const initialLibrary = !sampleWasSeeded && !libraryHasContent(recoveredLibrary)
+        ? firstAccessLibrary()
+        : recoveredLibrary ?? emptyLibrary();
+
+      applyLibrary(initialLibrary);
+      if (!guestLibrary || initialLibrary !== guestLibrary) writeStoredLibrary(guestKey, initialLibrary, false);
+      localStorage.setItem(FIRST_ACCESS_SEEDED_KEY, "true");
       const storedTheme = localStorage.getItem(THEME_KEY);
       if (storedTheme === "dark") setTheme("dark");
     } finally {

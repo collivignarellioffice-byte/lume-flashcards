@@ -179,6 +179,7 @@ const LEGACY_STORE_KEY = "lume-clean-v2";
 const STORE_PREFIX = "lume-library-v3";
 const THEME_KEY = "lume-clean-theme";
 const FIRST_ACCESS_SEEDED_KEY = "lume-first-access-seeded-v1";
+const FIRST_ACCESS_ONBOARDING_KEY = "lume-first-access-onboarding-v1";
 
 function libraryStoreKey(uid: string | null) {
   return `${STORE_PREFIX}:${uid ?? "guest"}`;
@@ -277,6 +278,31 @@ function libraryHasContent(library: CloudLibrary | null) {
   return Boolean(library && (library.folders.length > 0 || library.decks.length > 0));
 }
 
+const OLD_EXAMPLE_ANSWER = "Premi <strong>1</strong> se la sai e <strong>2</strong> se vuoi rivederla.";
+const EXAMPLE_ANSWER = "Premi <strong>Invio</strong> se la sai e <strong>Canc</strong> se non la sai.";
+const OLD_EXAMPLE_CONTEXT = "Mostra un <strong>contesto d’uso</strong> senza rivelare subito la risposta.";
+const EXAMPLE_CONTEXT = "Tieni premuta la <strong>barra spaziatrice</strong> per mostrare l’esempio.";
+
+function repairFirstAccessLibrary(library: CloudLibrary): CloudLibrary {
+  let repaired = false;
+  const decks = library.decks.map((deck) => {
+    if (deck.id !== "lume-example-deck") return deck;
+    const cards = deck.cards.map((card) => {
+      if (card.id === "lume-example-card-answer" && card.back === OLD_EXAMPLE_ANSWER) {
+        repaired = true;
+        return { ...card, back: EXAMPLE_ANSWER };
+      }
+      if (card.id === "lume-example-card-context" && card.back === OLD_EXAMPLE_CONTEXT) {
+        repaired = true;
+        return { ...card, back: EXAMPLE_CONTEXT };
+      }
+      return card;
+    });
+    return repaired ? { ...deck, cards } : deck;
+  });
+  return repaired ? { ...library, decks } : library;
+}
+
 function firstAccessLibrary(): CloudLibrary {
   const createdAt = Date.now();
   return {
@@ -316,7 +342,7 @@ function firstAccessLibrary(): CloudLibrary {
         {
           id: "lume-example-card-answer",
           front: "Come indico se conosco la risposta?",
-          back: "Premi <strong>1</strong> se la sai e <strong>2</strong> se vuoi rivederla.",
+          back: EXAMPLE_ANSWER,
           known: 0,
           missed: 0,
         },
@@ -330,7 +356,7 @@ function firstAccessLibrary(): CloudLibrary {
         {
           id: "lume-example-card-context",
           front: "Lato Esempio",
-          back: "Mostra un <strong>contesto d’uso</strong> senza rivelare subito la risposta.",
+          back: EXAMPLE_CONTEXT,
           example: "Il Lato Esempio aiuta a ricordare una parola dentro una frase.",
           known: 0,
           missed: 0,
@@ -770,6 +796,7 @@ export default function LumeApp() {
   const [randomKey, setRandomKey] = useState(0);
   const [randomFlipped, setRandomFlipped] = useState(false);
   const [study, setStudy] = useState<StudyState | null>(null);
+  const [firstAccessOnboardingOpen, setFirstAccessOnboardingOpen] = useState(false);
   const [showKeywords, setShowKeywords] = useState(false);
   const [showExample, setShowExample] = useState(false);
   const [studySettingsOpen, setStudySettingsOpen] = useState(false);
@@ -812,10 +839,11 @@ export default function LumeApp() {
   const syncChainRef = useRef<Promise<void>>(Promise.resolve());
   const localSnapshotRef = useRef<string | null>(null);
   const applyLibrary = useCallback((library: CloudLibrary) => {
-    setFolders(library.folders.map((folder) => normalizeFolder(folder as Folder)));
-    setDecks(library.decks.map(fromCloudDeck));
-    setStudyDays(library.studyDays);
-    setFocusMinutes(Math.min(240, Math.max(1, library.focusMinutes)));
+    const repairedLibrary = repairFirstAccessLibrary(library);
+    setFolders(repairedLibrary.folders.map((folder) => normalizeFolder(folder as Folder)));
+    setDecks(repairedLibrary.decks.map(fromCloudDeck));
+    setStudyDays(repairedLibrary.studyDays);
+    setFocusMinutes(Math.min(240, Math.max(1, repairedLibrary.focusMinutes)));
   }, []);
 
   useEffect(() => () => {
@@ -839,9 +867,22 @@ export default function LumeApp() {
         : null;
       const recoveredLibrary = stored ?? migratedLibrary;
       const sampleWasSeeded = localStorage.getItem(FIRST_ACCESS_SEEDED_KEY) === "true";
-      const initialLibrary = !sampleWasSeeded && !libraryHasContent(recoveredLibrary)
+      const shouldSeedFirstAccess = !sampleWasSeeded && !libraryHasContent(recoveredLibrary);
+      const initialLibraryBase = shouldSeedFirstAccess
         ? firstAccessLibrary()
         : recoveredLibrary ?? emptyLibrary();
+      const initialLibrary = repairFirstAccessLibrary(initialLibraryBase);
+      const onboardingStatus = localStorage.getItem(FIRST_ACCESS_ONBOARDING_KEY);
+
+      if (shouldSeedFirstAccess && onboardingStatus !== "seen") {
+        localStorage.setItem(FIRST_ACCESS_ONBOARDING_KEY, "pending");
+      }
+      if (
+        (shouldSeedFirstAccess || onboardingStatus === "pending")
+        && initialLibrary.decks.some((deck) => deck.id === "lume-example-deck")
+      ) {
+        setFirstAccessOnboardingOpen(true);
+      }
 
       applyLibrary(initialLibrary);
       if (!guestLibrary || initialLibrary !== guestLibrary) writeStoredLibrary(guestKey, initialLibrary, false);
@@ -944,12 +985,14 @@ export default function LumeApp() {
           const replaceLegacyDemo = stored.exists && isLegacyDemoLibrary(stored.library);
           const recoverLocalChanges = cached?.dirty === true;
           if (recoverLocalChanges) {
-            selectedLibrary = cached.library;
+            selectedLibrary = repairFirstAccessLibrary(cached.library);
             applyLibrary(selectedLibrary);
             await syncPrivateLibrary(nextAccount, stored.exists ? stored.library : null, selectedLibrary);
           } else if (stored.exists && !replaceLegacyDemo) {
-            selectedLibrary = normalizeStoredLibrary(stored.library) ?? stored.library;
+            const normalizedLibrary = normalizeStoredLibrary(stored.library) ?? stored.library;
+            selectedLibrary = repairFirstAccessLibrary(normalizedLibrary);
             applyLibrary(selectedLibrary);
+            if (selectedLibrary !== normalizedLibrary) await syncPrivateLibrary(nextAccount, stored.library, selectedLibrary);
             await new Promise((resolve) => window.setTimeout(resolve, 0));
           } else {
             const firstLibrary = firstAccessLibrary();
@@ -1171,7 +1214,7 @@ export default function LumeApp() {
   const studyEntry = resolveStudyCard(study);
 
   const startStudy = useCallback(
-    (deckIds: string[], startCardId?: string) => {
+    (deckIds: string[], startCardId?: string, initialMode: StudyMode | null = null) => {
       const sourceDecks = deckIds.map((id) => studyLibrary.find((deck) => deck.id === id)).filter((deck): deck is Deck => Boolean(deck));
       if (!sourceDecks.length) return;
       const cards = sourceDecks.flatMap((deck) => deck.cards);
@@ -1189,7 +1232,7 @@ export default function LumeApp() {
         index: 0,
         flipped: false,
         revealedCardIds: [],
-        mode: null,
+        mode: initialMode,
         known: 0,
         missed: [],
         learnedIds: [],
@@ -1216,6 +1259,17 @@ export default function LumeApp() {
     },
     [studyLibrary],
   );
+
+  const dismissFirstAccessOnboarding = useCallback(() => {
+    localStorage.setItem(FIRST_ACCESS_ONBOARDING_KEY, "seen");
+    setFirstAccessOnboardingOpen(false);
+  }, []);
+
+  const openFirstAccessDemo = useCallback(() => {
+    localStorage.setItem(FIRST_ACCESS_ONBOARDING_KEY, "seen");
+    setFirstAccessOnboardingOpen(false);
+    startStudy(["lume-example-deck"], undefined, "learn");
+  }, [startStudy]);
 
   const chooseStudyMode = useCallback((mode: StudyMode) => {
     setStudy((current) => current ? {
@@ -2131,6 +2185,13 @@ export default function LumeApp() {
       )}
 
       {classDialog && <ClassDialog mode={classDialog.mode} initialCode={classDialog.code} busy={classBusy} notice={classNotice} onSubmit={(value) => { void handleClassDialog(classDialog.mode, value); }} onClose={() => setClassDialog(null)} />}
+
+      {firstAccessOnboardingOpen && (
+        <FirstAccessOnboarding
+          onStart={openFirstAccessDemo}
+          onClose={dismissFirstAccessOnboarding}
+        />
+      )}
 
       {notificationsOpen && <NotificationCenter notifications={notifications} onAction={(notification, action) => { void handleNotificationAction(notification, action); }} onClose={() => setNotificationsOpen(false)} />}
 
@@ -3048,6 +3109,34 @@ function studyTextSize(value: string) {
 
 function studyDifficultyScore(state: StudyState, cardId: string) {
   return (state.missesByCard[cardId] ?? 0) * 2 + (state.attemptsByCard[cardId] ?? 0);
+}
+
+function FirstAccessOnboarding({ onStart, onClose }: { onStart: () => void; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop-clean first-access-backdrop" role="presentation">
+      <section className="first-access-onboarding" role="dialog" aria-modal="true" aria-labelledby="first-access-title">
+        <button className="round-close" type="button" onClick={onClose} aria-label="Chiudi">×</button>
+        <span>Il tuo primo set</span>
+        <h2 id="first-access-title">Scopri Lume</h2>
+        <p>Abbiamo preparato quattro flashcard per farti provare i comandi e il ritmo di ripasso.</p>
+        <div className="first-access-modes" aria-label="Modalità di studio disponibili">
+          <article>
+            <strong>Studio</strong>
+            <p>Le carte che non sai tornano durante la sessione, finché non le hai ricordate tutte.</p>
+          </article>
+          <article>
+            <strong>Test</strong>
+            <p>Ogni carta appare una volta. Alla fine trovi il punteggio, gli errori e cosa ripassare.</p>
+          </article>
+        </div>
+        <p className="first-access-note">Per questa prima prova entrerai direttamente in modalità Studio. In seguito potrai scegliere Studio o Test prima di ogni sessione.</p>
+        <div className="first-access-actions">
+          <button className="text-button" type="button" onClick={onClose}>Esplora da sola</button>
+          <button className="primary-dark" type="button" onClick={onStart}>Apri Scopri Lume</button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function difficultStudyCardIds(state: StudyState) {

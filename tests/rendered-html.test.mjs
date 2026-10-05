@@ -68,9 +68,19 @@ test("keeps each account library separate and seeds a private first-use example"
   assert.match(page, /title: "Scopri Lume"/);
   assert.match(page, /visibility: "private"/);
   assert.match(page, /front: "Lato Esempio"/);
+  assert.match(page, /Premi <strong>Invio<\/strong> se la sai e <strong>Canc<\/strong> se non la sai/);
+  assert.match(page, /Tieni premuta la <strong>barra spaziatrice<\/strong> per mostrare l’esempio/);
+  assert.match(page, /repairFirstAccessLibrary/);
+  assert.doesNotMatch(page, /back: "Premi <strong>1<\/strong> se la sai e <strong>2<\/strong> se vuoi rivederla/);
   assert.match(page, /writeStoredLibrary\(guestKey, initialLibrary, false\)/);
   assert.match(page, /lume-first-access-seeded-v1/);
+  assert.match(page, /lume-first-access-onboarding-v1/);
   assert.match(page, /!sampleWasSeeded && !libraryHasContent\(recoveredLibrary\)/);
+  assert.match(page, /<h2 id="first-access-title">Scopri Lume<\/h2>/);
+  assert.match(page, /Le carte che non sai tornano durante la sessione/);
+  assert.match(page, /Ogni carta appare una volta/);
+  assert.match(page, /startStudy\(\["lume-example-deck"\], undefined, "learn"\)/);
+  assert.match(page, /mode: initialMode/);
   assert.match(cloud, /libraryInitialized: true/);
 });
 

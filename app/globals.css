@@ -4198,6 +4198,114 @@ select:focus-visible,
   margin: 0;
 }
 
+.first-access-backdrop {
+  background: rgba(20, 20, 18, 0.46);
+  z-index: 1100;
+}
+
+.first-access-onboarding {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 30px 80px rgba(24, 23, 20, 0.24);
+  max-width: 650px;
+  padding: 42px;
+  width: 100%;
+}
+
+.first-access-onboarding > span {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.first-access-onboarding h2 {
+  font-size: clamp(34px, 5vw, 48px);
+  font-weight: 440;
+  letter-spacing: -0.05em;
+  margin: 10px 0 9px;
+}
+
+.first-access-onboarding > p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+  max-width: 520px;
+}
+
+.first-access-modes {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 28px 0 20px;
+}
+
+.first-access-modes article {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-height: 150px;
+  padding: 22px;
+}
+
+.first-access-modes strong {
+  font-size: 22px;
+  font-weight: 480;
+}
+
+.first-access-modes p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 12px 0 0;
+}
+
+.first-access-onboarding .first-access-note {
+  border-left: 2px solid #91aaa4;
+  font-size: 11px;
+  max-width: none;
+  padding-left: 14px;
+}
+
+.first-access-actions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 28px;
+}
+
+.first-access-actions .primary-dark {
+  min-height: 46px;
+  padding-inline: 22px;
+}
+
+@media (max-width: 620px) {
+  .first-access-onboarding {
+    padding: 34px 22px 24px;
+  }
+
+  .first-access-modes {
+    grid-template-columns: 1fr;
+  }
+
+  .first-access-modes article {
+    min-height: 0;
+  }
+
+  .first-access-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .first-access-actions button {
+    min-height: 46px;
+    width: 100%;
+  }
+}
+
 .mode-onboarding-steps {
   display: grid;
   gap: 0;

@@ -135,6 +135,18 @@ select:focus-visible,
   background: var(--panel-soft);
 }
 
+.primary-create-actions {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.primary-create-actions button {
+  color: var(--muted);
+}
+
 .icon-home,
 .icon-search,
 .icon-folder-line,
@@ -224,15 +236,6 @@ select:focus-visible,
   letter-spacing: 0.12em;
   padding: 23px 12px 12px;
   text-transform: uppercase;
-}
-
-.sidebar-folders-heading button {
-  background: transparent;
-  border: 0;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 23px;
-  line-height: 1;
 }
 
 .folder-tree {

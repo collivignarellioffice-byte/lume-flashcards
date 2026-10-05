@@ -33,7 +33,10 @@ test("renders the Lume application shell", async () => {
   assert.match(html, /Lume/);
   assert.match(html, /Unlimited learning/);
   assert.match(html, /Il mio spazio/);
+  assert.match(html, /Nuovo set/);
+  assert.match(html, /Nuova cartella/);
   assert.match(html, /Le mie cartelle/);
+  assert.doesNotMatch(html, /aria-label="Crea cartella o set">＋<\/button>/);
   assert.match(html, /Riprendi da qui/);
   assert.match(html, /Flashcard a caso/);
   assert.match(html, /Crea il tuo primo set per iniziare/);

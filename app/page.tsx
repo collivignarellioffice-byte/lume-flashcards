@@ -1889,7 +1889,8 @@ export default function LumeApp() {
           })
         }
         onNavigate={setView}
-        onCreate={() => setCreateMenu((open) => !open)}
+        onCreateDeck={() => setDeckCreator({ folderId: view.name === "folder" ? view.id : null })}
+        onCreateFolder={() => setFolderCreator({ parentId: view.name === "folder" ? view.id : null })}
         onTheme={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
         onPreferences={() => setPreferencesOpen(true)}
         onMoveDeck={(deckId, folderId) => moveDecks([deckId], folderId)}
@@ -2216,7 +2217,8 @@ function Sidebar({
   expanded,
   onToggle,
   onNavigate,
-  onCreate,
+  onCreateDeck,
+  onCreateFolder,
   onTheme,
   onPreferences,
   onMoveDeck,
@@ -2231,7 +2233,8 @@ function Sidebar({
   expanded: Set<string>;
   onToggle: (id: string) => void;
   onNavigate: (view: View) => void;
-  onCreate: () => void;
+  onCreateDeck: () => void;
+  onCreateFolder: () => void;
   onTheme: () => void;
   onPreferences: () => void;
   onMoveDeck: (deckId: string, folderId: string | null) => void;
@@ -2298,10 +2301,13 @@ function Sidebar({
         <button className={view.name === "home" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "home" })}><TablerIcon name="home-2" />Il mio spazio</button>
         <button className={view.name === "explore" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "explore" })}><TablerIcon name="compass" />Esplora</button>
         <button className={view.name === "classes" || view.name === "class" ? "active" : ""} type="button" onClick={() => onNavigate({ name: "classes" })}><TablerIcon name="users-group" />Classi</button>
+        <div className="primary-create-actions">
+          <button type="button" onClick={onCreateDeck}><TablerIcon name="book-2" />Nuovo set</button>
+          <button type="button" onClick={onCreateFolder}><TablerIcon name="folder" />Nuova cartella</button>
+        </div>
       </nav>
       <div className={dropTarget === null ? "sidebar-folders-heading drop-target" : "sidebar-folders-heading"} onDragOver={(event) => { event.preventDefault(); setDropTarget(null); }} onDragLeave={() => setDropTarget(undefined)} onDrop={(event) => dropInto(event, null)}>
         <span>Le mie cartelle</span>
-        <button type="button" onClick={onCreate} aria-label="Crea cartella o set">＋</button>
       </div>
       <div className="folder-tree">{renderTree(null)}</div>
       {decks.some((deck) => !deck.folderId) && (
